@@ -1,0 +1,5 @@
+# Put certs for connecting to kafka in this directory, but
+# don't commit them!
+*
+# Keep this file
+!.gitignore

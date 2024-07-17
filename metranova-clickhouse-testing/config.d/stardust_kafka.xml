@@ -1,0 +1,20 @@
+<clickhouse>
+    <named_collections>
+      <stardust_kafka>
+        <kafka_broker_list>1.2.3.4:9094</kafka_broker_list>
+        <kafka_topic_list>stardust_flow</kafka_topic_list>
+        <kafka_group_name>metranova_clickhouse_testing1</kafka_group_name>
+        <kafka_format>JSONAsString</kafka_format>
+        <kafka_flush_interval_ms>10000</kafka_flush_interval_ms>
+        <kafka_thread_per_consumer>1</kafka_thread_per_consumer>
+        <kafka_num_consumers>1</kafka_num_consumers>
+        <kafka>    
+          <log_level>3</log_level>
+          <security_protocol>ssl</security_protocol>
+          <ssl_ca_location>/etc/clickhouse-server/certs/kafka_stardust_ca.crt</ssl_ca_location>
+          <ssl_certificate_location>/etc/clickhouse-server/certs/kafka_stardust_user.crt</ssl_certificate_location>
+          <ssl_key_location>/etc/clickhouse-server/certs/kafka_stardust_user.key</ssl_key_location>
+        </kafka>    
+      </stardust_kafka>
+    </named_collections>  
+</clickhouse>

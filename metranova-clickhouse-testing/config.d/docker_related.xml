@@ -1,0 +1,14 @@
+<clickhouse>
+   <!-- Listen wildcard address to allow accepting connections from other containers and host network. -->
+   <!-- if v6, uncomment this -->
+   <!-- <listen_host>::</listen_host> -->
+   <listen_host>0.0.0.0</listen_host>
+   <listen_try>1</listen_try>
+   <listen_reuse_port>1</listen_reuse_port>
+
+   <!-- log everything to console so viewable via docker logs -->
+   <logger>
+     <console>1</console>
+     <level>information</level>
+   </logger>
+</clickhouse>
