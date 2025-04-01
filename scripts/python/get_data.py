@@ -1,4 +1,7 @@
 import argparse
+import csv
+import os
+import re
 import sys
 from time import time
 
@@ -91,8 +94,8 @@ def parse_meta_fields(metafields: list):
         if (
             field["name"] == "tag"
             or field["name"] == "kvp"
-            or field["name"] == "circuit"
-            or field["name"] == "service"
+            # or field["name"] == "circuit"
+            # or field["name"] == "service"
         ):
             continue
 
@@ -106,11 +109,48 @@ def parse_meta_fields(metafields: list):
     return parsed_fields
 
 
-def write_data(data: dict):
-    return
+def sanitize_filename(name):
+    return re.sub(r'[\/:*?"<>|]', "_", name)
 
 
-def main(start: int, end: int, base_url: str, limit: int):
+def write_data(data: dict, output_dir: str):
+    for node, interfaces in data.items():
+        for interface, data in interfaces.items():
+            safe_node = sanitize_filename(node)
+            safe_interface = sanitize_filename(interface)
+            filename = f"{output_dir}/{safe_node}_{safe_interface}.tsv"
+
+            with open(filename, mode="w", newline="", encoding="utf-8") as tsvfile:
+                writer = csv.writer(tsvfile, delimiter="\t")
+
+                input_key = "aggregate(values.input, 60, average)"
+                output_key = "aggregate(values.output, 60, average)"
+                metadata_keys = [
+                    k for k in data.keys() if k not in [input_key, output_key]
+                ]
+
+                writer.writerow(metadata_keys + ["timestamp", input_key, output_key])
+
+                input_results = {t[0]: t[1] for t in data.get(input_key, [])}
+                output_results = {t[0]: t[1] for t in data.get(output_key, [])}
+
+                for timestamp in sorted(
+                    set(input_results.keys()).union(output_results.keys())
+                ):
+                    row = [data[key] for key in metadata_keys]  # Metadata values
+                    row.extend(
+                        [
+                            timestamp,
+                            input_results.get(timestamp, ""),
+                            output_results.get(timestamp, ""),
+                        ]
+                    )
+                    writer.writerow(row)
+
+    print(f"TSV files written to {output_dir}/")
+
+
+def main(start: int, end: int, base_url: str, limit: int, output_dir: str):
     client = wsc.WSC()
     client.strict_content_type = False
 
@@ -137,12 +177,12 @@ def main(start: int, end: int, base_url: str, limit: int):
             )
 
             if interface_data:
-                data[node][interface] = interface_data
+                data[node][interface] = interface_data["results"][0]
                 total = total + 1
             else:
                 print(f"Skipping {node}-{interface} because no data was returned")
 
-    write_data(data)
+    write_data(data, output_dir)
 
 
 if __name__ == "__main__":
@@ -173,7 +213,13 @@ if __name__ == "__main__":
         default=0,
         help="The number of node-intf pairs to pull data for.",
     )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=".",
+        help="The directory to put the data in.",
+    )
 
     args = parser.parse_args()
 
-    main(args.start, args.end, args.url, args.limit)
+    main(args.start, args.end, args.url, args.limit, args.output_dir)
