@@ -1,2 +1,5 @@
 snmp_data/
+venv
+*~
+\#*\#
 
