@@ -13,12 +13,12 @@ now = datetime.datetime.now() - datetime.timedelta(minutes=30) # processing dela
 fourteen_days = datetime.timedelta(days=14)
 fourteen_days_ago = datetime.datetime.now() - fourteen_days
 
-parser.add_argument('--start', help='Start date for fetch, in ISO8601 format. Default: 90 days ago.', default=fourteen_days_ago.isoformat())
-parser.add_argument('--end', help='End date for fetch, in ISO8601 format. Default: today', default=now.isoformat())
+parser.add_argument('--start', help='Start date for fetch, in ISO8601 format. Default: 14 days, 30m ago.', default=fourteen_days_ago.isoformat())
+parser.add_argument('--end', help='End date for fetch, in ISO8601 format. Default: 30 min ago', default=now.isoformat())
 parser.add_argument('--format', help='Record dump format. Note that the "json" formatter dumps one json object per line, rather than an array of objects, to preserve streaming', default='tsv', choices=['tsv', 'json', 'csv'])
 parser.add_argument('--stardust-url', default="https://el.gc1.prod.stardust.es.net:9200")
 parser.add_argument('--index', default='sd_public_interfaces')
-parser.add_argument('--outfile', default=sys.stdout)
+parser.add_argument('--outfile', default=sys.stdout, type=argparse.FileType('w'))
 
 args = parser.parse_args()
 
