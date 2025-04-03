@@ -8,9 +8,9 @@ from time import time
 from globalnoc import wsc
 
 
-def get_nodes(client, start: int, end: int, base_url: str):
+def get_nodes(client, start: int, end: int, base_url: str, node_role: str):
     client.url = f"{base_url}query.cgi"
-    query = f'get node between({start}, {end}) by node from interface where node_role like "core"'
+    query = f'get node between({start}, {end}) by node from interface where node_role like "{node_role}"'
 
     res = client.query(query=query)
     res = res["results"]
@@ -94,8 +94,8 @@ def parse_meta_fields(metafields: list):
         if (
             field["name"] == "tag"
             or field["name"] == "kvp"
-            # or field["name"] == "circuit"
-            # or field["name"] == "service"
+            or field["name"] == "circuit"
+            or field["name"] == "service"
         ):
             continue
 
@@ -137,7 +137,7 @@ def write_data(data: dict, output_dir: str):
                 for timestamp in sorted(
                     set(input_results.keys()).union(output_results.keys())
                 ):
-                    row = [data[key] for key in metadata_keys]  # Metadata values
+                    row = [data[key] for key in metadata_keys]
                     row.extend(
                         [
                             timestamp,
@@ -150,7 +150,9 @@ def write_data(data: dict, output_dir: str):
     print(f"TSV files written to {output_dir}/")
 
 
-def main(start: int, end: int, base_url: str, limit: int, output_dir: str):
+def main(
+    start: int, end: int, base_url: str, limit: int, output_dir: str, node_role: str
+):
     client = wsc.WSC()
     client.strict_content_type = False
 
@@ -160,7 +162,7 @@ def main(start: int, end: int, base_url: str, limit: int, output_dir: str):
     data = {}
     total = 0
 
-    nodes = get_nodes(client, start, end, base_url)
+    nodes = get_nodes(client, start, end, base_url, node_role)
     for node in nodes:
         if limit != 0 and total >= limit:
             break
@@ -219,7 +221,13 @@ if __name__ == "__main__":
         default=".",
         help="The directory to put the data in.",
     )
+    parser.add_argument(
+        "--node_role",
+        type=str,
+        default=".",
+        help="The node role to pull data for.",
+    )
 
     args = parser.parse_args()
 
-    main(args.start, args.end, args.url, args.limit, args.output_dir)
+    main(args.start, args.end, args.url, args.limit, args.output_dir, args.node_role)
