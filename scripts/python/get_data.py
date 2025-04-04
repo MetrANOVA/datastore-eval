@@ -94,8 +94,8 @@ def parse_meta_fields(metafields: list):
         if (
             field["name"] == "tag"
             or field["name"] == "kvp"
-            or field["name"] == "circuit"
-            or field["name"] == "service"
+            # or field["name"] == "circuit"
+            # or field["name"] == "service"
         ):
             continue
 
@@ -224,7 +224,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--node_role",
         type=str,
-        default=".",
+        default="core",
         help="The node role to pull data for.",
     )
 
