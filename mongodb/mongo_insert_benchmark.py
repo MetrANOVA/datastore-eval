@@ -203,8 +203,8 @@ def insert_data_and_benchmark(
                             "timestamp": timestamp,
                             "metadata": metadata,
                             # Add measurements directly (not nested under a sub-field usually)
-                            INPUT_COL: input_val,
-                            OUTPUT_COL: output_val,
+                            "input": input_val,
+                            "output": output_val,
                             # Add any other top-level fields if needed from row_data
                         }
                         batch.append(document)
@@ -346,6 +346,7 @@ def insert_data_and_benchmark(
                 except Exception as e:
                     duration = time.monotonic() - start_time
                     print(f"  ERROR: Unexpected error inserting final batch: {e}")
+                    batch_durations.append(duration)
                     benchmark_results.append(
                         {
                             "file": filename,

@@ -1,7 +1,7 @@
 from pymongo import MongoClient
 
 MONGO_URI = "mongodb://localhost:27017/"
-DB_NAME = "myTimeSeriesDB"
+DB_NAME = "datastoreEval"
 
 try:
     client = MongoClient(MONGO_URI)
