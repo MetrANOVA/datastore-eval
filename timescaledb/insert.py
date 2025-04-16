@@ -18,7 +18,7 @@ parser.add_argument('--infile', default=sys.stdin, type=argparse.FileType('r'))
 parser.add_argument('--wide', action='store_true')
 parser.add_argument('--batch-size', default=5000)
 
-conn = psycopg2.connect(database='weather_db')
+conn = psycopg2.connect(database=args.db)
 managers = {
     "values": CopyManager(conn, args.values_table, cols),
 }
