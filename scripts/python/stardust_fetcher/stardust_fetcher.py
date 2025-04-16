@@ -5,6 +5,7 @@ import datetime
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import scan
 import sys
+from formats import WIDE_FORMAT, NARROW_FORMAT
 
 parser = argparse.ArgumentParser(description='Fetches public data from ESnet Stardust, formatting the output as csv, tsv, or json.')
 
@@ -19,6 +20,7 @@ parser.add_argument('--format', help='Record dump format. Note that the "json" f
 parser.add_argument('--stardust-url', default="https://el.gc1.prod.stardust.es.net:9200")
 parser.add_argument('--index', default='sd_public_interfaces')
 parser.add_argument('--outfile', default=sys.stdout, type=argparse.FileType('w'))
+parser.add_argument('--wide', action='store_true')
 
 args = parser.parse_args()
 
@@ -52,47 +54,10 @@ class DataDumper:
         for hit in scan(self.es, index=index, query=query, preserve_order=True):
             yield hit["_source"]
 
-    def get_fieldnames(self):
-        return [
-            'values.if_in_bits.delta',
-            'values.if_out_bits.delta',
-            'values.in_bcast_pkts.delta',
-            'values.out_bcast_pkts.delta',
-            'values.in_bits.delta',
-            'values.out_bits.delta',
-            'values.in_discards.delta',
-            'values.out_discards.delta',
-            'values.in_errors.delta',
-            'values.out_errors.delta',
-            'values.in_mcast_pkts.delta',
-            'values.out_mcast_pkts.delta',
-            'values.in_ucast_pkts.delta',
-            'values.out_ucast_pkts.delta',
-            '@timestamp',
-            '@processing_time',
-            '@exit_time',
-            '@collect_time_min',
-            'meta.if_oper_status',
-            'meta.device',
-            'meta.if_admin_status',
-            'meta.oper_status',
-            'meta.descr',
-            'meta.speed',
-            'meta.alias',
-            'meta.device_info.state',
-            'meta.device_info.os',
-            'meta.device_info.loc_name',
-            'meta.device_info.loc_type',
-            'meta.device_info.location.lat',
-            'meta.device_info.location.lon',
-            'meta.device_info.network',
-            'meta.device_info.role',
-            'meta.admin_status',
-            'meta.name',
-            'meta.intercloud',
-            'meta.port_mode',
-            'meta.ifindex'
-        ]
+    def get_fieldnames(self, wide=False):
+        if wide:
+            return WIDE_FORMAT
+        return NARROW_FORMAT
 
     def resolve(self, record, keys):
         key = keys.pop(0)
@@ -100,22 +65,30 @@ class DataDumper:
             return self.resolve(record.get(key, {}), keys)
         return record.get(key)
 
-    def format_record(self, record):
+    def format_record(self, record, wide=False):
         output = {}
-        for compound_key in self.get_fieldnames():
+        for compound_key in self.get_fieldnames(wide=wide):
             keys = compound_key.split(".")
             output[compound_key] = self.resolve(record, keys)
         return output
 
+    def enumerate_keys(self, d, parent_key=""):
+        for k in d.keys():
+            key = "%s.%s" % (parent_key, k)
+            yield key
+            if type(d[k]) == dict:
+                yield from self.enumerate_keys(d[k], parent_key=key)
+
+    
     def dump(self, index=args.index, start=args.start, end=args.end, outfile=args.outfile, fmt=args.format):
         if fmt in ["tsv", "csv"]:
             kwargs = {}
-            if format == 'tsv':
+            if fmt == 'tsv':
                 kwargs = { "delimiter":'\t', "lineterminator":'\n'}
-            writer = csv.DictWriter(outfile, self.get_fieldnames(), **kwargs)
+            writer = csv.DictWriter(outfile, self.get_fieldnames(wide=args.wide), **kwargs)
             writer.writeheader()
             for record in self.query(index=index, start=start, end=end):
-                r = self.format_record(record)
+                r = self.format_record(record, wide=args.wide)
                 writer.writerow(r)
         if fmt == "json":
             for record in self.query(index=index, start=start, end=end):

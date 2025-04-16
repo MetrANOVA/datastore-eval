@@ -1,2 +1,2 @@
 elasticsearch==8.17.2
-orjson==3.10.16
+orjson==3.10.15
