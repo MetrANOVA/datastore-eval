@@ -26,6 +26,7 @@ parser.add_argument('--infile', help="Read rows from infile. Default: sys.stdin"
 parser.add_argument('--wide', help="Use stardust 'wide' format, including all columns.", action='store_true')
 parser.add_argument('--batch-size', help="Batch size to do inserts, in rows.", type=int, default=5000)
 parser.add_argument('--limit', help="total insertion limit", type=int, default=20000)
+parser.add_argument('--offset', help="offset to begin inserts from from input file", type=int, default=0)
 
 args = parser.parse_args()
 
@@ -104,10 +105,16 @@ def insert_batch(batch, strategy="hashed-metadata"):
         timed_copy(managers['values'], batch, timing_bucket="values_insert")
         logging.info('copied %s values rows (postgres insert time)' % len(batch))
 
-def timed_assembly(infile, header, batch_size=1, timing_bucket="values_assembly"):
+def timed_assembly(infile, header, batch_size=1, timing_bucket="values_assembly", offset=0):
     batch = []
     before = time.perf_counter()
+    curr_line = 0
     for line in infile:
+        curr_line += 1
+        if curr_line < offset:
+            if curr_line % 1000 == 0:
+                logging.info("seeking to offset... %s", curr_line)
+            continue
         row = line.rstrip("\n").split("\t")
 
         batch.append(assemble(row, header, fmt=WIDE_FORMAT if args.wide else NARROW_FORMAT, original_line=line))
@@ -184,7 +191,7 @@ header_line = args.infile.readline()
 header = header_line.strip().split("\t")
 total_inserts = 0
 
-for batch in timed_assembly(infile=args.infile, header=header, batch_size=args.batch_size, timing_bucket="values_assembly"):
+for batch in timed_assembly(infile=args.infile, header=header, batch_size=args.batch_size, timing_bucket="values_assembly", offset=args.offset):
     insert_batch(batch, strategy=args.strategy)
     total_inserts += len(batch)
     if total_inserts >= args.limit:
