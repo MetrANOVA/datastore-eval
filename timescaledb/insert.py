@@ -10,6 +10,8 @@ import sys
 import time
 from assemble import assemble
 import logging
+import tempfile
+import os
 
 logging.basicConfig(format='%(asctime)s :: %(message)s', level=logging.INFO)
 
@@ -27,6 +29,9 @@ parser.add_argument('--wide', help="Use stardust 'wide' format, including all co
 parser.add_argument('--batch-size', help="Batch size to do inserts, in rows.", type=int, default=5000)
 parser.add_argument('--limit', help="total insertion limit", type=int, default=20000)
 parser.add_argument('--offset', help="offset to begin inserts from from input file", type=int, default=0)
+parser.add_argument('--binary-output-dir', help="directory name to output binary COPY statements to", default="/tmp/%s" % ''.join(random.choices(string.ascii_letters + string.digits, k=8)))
+parser.add_argument('--binary-output-intermediate', help="save binary intermediate output. See also: --binary-output-dir. default: False", default=False)
+parser.add_argument('--binary-input-dir', help="read COPY batches fron binary intermediate input. See also: --binary-output-intermediate. Default: False", default=False)
 
 args = parser.parse_args()
 
@@ -38,6 +43,9 @@ if args.wide:
 
 columns = [val for key, val in col_source.items() if not key.startswith("meta")]
 columns.append("metadata") # in all formats and strategies, we use a special "metadata" column
+
+if args.binary_output_intermediate:
+    logging.warn("Saving binary COPY output to '%s'" % args.binary_output_dir)
 
 managers = {
     'values': CopyManager(conn, args.values_table, columns)
@@ -70,9 +78,19 @@ timing_buckets = {
     }
 }
 
-def timed_copy(mgr, batch, timing_bucket="values_insert"):
+def timed_copy(mgr, batch, timing_bucket="values_insert", preserve_copy_files=False):
     before = time.perf_counter()
-    mgr.copy(batch)
+    tmpfile_factory = tempfile.TemporaryFile
+    def tmpdir(dirname)
+        calls = 0
+        def get_file():
+            fname = "%s.copy.bin" % (str(calls).zfill(8))
+            calls += 1
+            return open(os.path.join(dirname, fname), "wb")
+        return get_file
+    if preserve_copy_files:
+        tmpfile_factory = tmpdir(args.binary_output_dir)
+    mgr.copy(batch, tmpfile_factory)
     # timing details
     after = time.perf_counter()
     execution_time = after - before
@@ -186,18 +204,38 @@ def final_report():
     %s
     """ % (total_inserts, total_times, avg_insertion_rate, batch_stats))
 
+
+def copy_binary_batch(f, timing_bucket="values_insert"):
+    before = time.perf_counter()    
+    mgr.copystream(f)
+    after = time.perf_counter()
+    execution_time = after - before
+    timing_buckets[timing_bucket]["total"] += execution_time
+    if timing_buckets[timing_bucket]["min"] is None or execution_time < timing_buckets[timing_bucket]["min"]:
+        timing_buckets[timing_bucket]["min"] = execution_time
+    if timing_buckets[timing_bucket]["max"] is None or execution_time > timing_buckets[timing_bucket]["max"]:
+        timing_buckets[timing_bucket]["max"] = execution_time
+    timing_buckets[timing_bucket]["count"] += 1
+
+
         
 header_line = args.infile.readline()
 header = header_line.strip().split("\t")
 total_inserts = 0
 
-for batch in timed_assembly(infile=args.infile, header=header, batch_size=args.batch_size, timing_bucket="values_assembly", offset=args.offset):
-    insert_batch(batch, strategy=args.strategy)
-    total_inserts += len(batch)
-    if total_inserts >= args.limit:
-        conn.commit()
-        logging.info('committed %s values rows (postgres overhead)' % args.limit)
-        break
+if not args.binary_input_dir:
+    for filename in os.listdir(args.binary_output_dir):
+        with open(os.path.join(os.getcwd(), filename), 'rb') as f:
+            copy_binary_batch(f)
+else:
+    for batch in timed_assembly(infile=args.infile, header=header, batch_size=args.batch_size, timing_bucket="values_assembly", offset=args.offset):
+        insert_batch(batch, strategy=args.strategy)
+        total_inserts += len(batch)
+        if total_inserts >= args.limit:
+            conn.commit()
+            logging.info('committed %s values rows (postgres overhead)' % args.limit)
+            break
+
 
 # don't forget to commit!
 conn.commit()
