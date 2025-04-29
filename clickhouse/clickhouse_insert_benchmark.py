@@ -28,12 +28,20 @@ TSV_METADATA_COLS = [
     "circuit.customer_type",
     "circuit.description",
     "circuit.name",
+    "circuit.owner",
+    "circuit.owner_id",
     "circuit.role",
+    "circuit.speed",
     "circuit.type",
     "contracted_bandwidth",
     "description",
+    "entity.contracted_bandwidth",
+    "entity.id",
+    "entity.type",
+    "entity.name",
     "interface_address",
     "interface_id",
+    "max_bandwidth",
     "network",
     "node_id",
     "node_management_address",
@@ -41,10 +49,12 @@ TSV_METADATA_COLS = [
     "node_type",
     "parent_interface",
     "pop.id",
+    "pop.locality",
     "pop.name",
     "pop.type",
     "service.description",
     "service.direction",
+    "service.contracted_bandwidth",
     "service.entity",
     "service.entity_id",
     "service.entity_roles",
@@ -69,6 +79,9 @@ def parse_timestamp(ts_string, fmt="%Y-%m-%dT%H:%M:%S.%fZ"):
     """Parses timestamp string to timezone-aware UTC datetime."""
     # (Function remains the same as previous version)
     try:
+        if ts_string.isdigit() or ("." in ts_string and ts_string.replace(".", "", 1).isdigit()):
+            return datetime.datetime.fromtimestamp(float(ts_string), tz=datetime.timezone.utc
+                                                            )
         if fmt.endswith("Z") and ts_string.endswith("Z"):
             ts_string = ts_string[:-1] + "+0000"
             fmt = fmt[:-1] + "%z"
@@ -115,8 +128,8 @@ def create_tsv_to_ch_mapping(tsv_headers, ch_schema):
     # Direct mappings for required fields (assuming TSV names match sample keys)
     direct_map = {
         TSV_TIMESTAMP_COL: "timestamp",  # CH name is simple
-        TSV_INPUT_COL: "input",
-        TSV_OUTPUT_COL: "output",
+        TSV_INPUT_COL: "aggregate(values.input, 60, average)",
+        TSV_OUTPUT_COL: "aggregate(values.output, 60, average)",
         TSV_NODE_COL: "node",
         TSV_INTF_COL: "intf",
     }
@@ -139,7 +152,7 @@ def create_tsv_to_ch_mapping(tsv_headers, ch_schema):
         # Check metadata columns (need quoting for CH name)
         elif tsv_col in TSV_METADATA_COLS:
             # Construct the expected ClickHouse column name with backticks
-            ch_col = f"`{tsv_col}`"
+            ch_col = f"{tsv_col}"
             if ch_col in ch_columns_set:
                 mapping[tsv_col] = ch_col
                 found = True
@@ -150,6 +163,7 @@ def create_tsv_to_ch_mapping(tsv_headers, ch_schema):
                 f"  INFO: TSV Header '{tsv_col}' does not map to any known ClickHouse column. It will be ignored.",
                 file=sys.stderr,
             )
+            print(ch_columns_set)
 
     # Check if all required TSV columns were successfully mapped
     for req_col in REQUIRED_TSV_COLS:
@@ -548,7 +562,7 @@ def insert_data_and_benchmark(
             file=sys.stderr,
         )
 
-    if "client" in locals() and client.is_connected:
+    if "client" in locals() and client:
         client.close()
         print("ClickHouse connection closed.")
     print("Benchmarking complete.")

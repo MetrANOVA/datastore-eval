@@ -39,7 +39,7 @@ def reset_clickhouse_table(host, port, user, password, db_name, table_name):
         print(f"An error occurred during truncate: {e}", file=sys.stderr)
         # You might want more specific error handling here
     finally:
-        if "client" in locals() and client.is_connected:
+        if "client" in locals() and client:
             client.close()
             print("ClickHouse connection closed.")
 

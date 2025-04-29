@@ -48,8 +48,8 @@ def setup_clickhouse(host, port, user, password, db_name, table_name):
             "`timestamp` DateTime64(3, 'UTC')",  # Millisecond precision, stored as UTC
             "`node` String",  # REQUIRED based on sample
             "`intf` String",  # REQUIRED based on sample (interface name)
-            "`input` Float64",  # Measurement
-            "`output` Float64",  # Measurement
+            "`aggregate(values.input, 60, average)` Float64",  # Measurement
+            "`aggregate(values.output, 60, average)` Float64",  # Measurement
         ]
 
         # Metadata fields from sample - make them Nullable Strings
@@ -65,12 +65,20 @@ def setup_clickhouse(host, port, user, password, db_name, table_name):
             "`circuit.customer_type` Nullable(String)",
             "`circuit.description` Nullable(String)",
             "`circuit.name` Nullable(String)",
+            "`circuit.owner` Nullable(String)",
+            "`circuit.owner_id` Nullable(String)",
             "`circuit.role` Nullable(String)",  # Storing the list-like string as String
+            "`circuit.speed` Nullable(String)",
             "`circuit.type` Nullable(String)",
             "`contracted_bandwidth` Nullable(String)",  # Keeping as String due to '0' example
             "`description` Nullable(String)",
+            "`entity.contracted_bandwidth` Nullable(String)",
+            "`entity.id` Nullable(String)",
+            "`entity.type` Nullable(String)",
+            "`entity.name` Nullable(String)",
             "`interface_address` Nullable(String)",  # Storing '[]' as String
             "`interface_id` Nullable(String)",
+            "`max_bandwidth` Nullable(String)",
             "`network` Nullable(String)",
             # Skipping node, intf, input, output as they are defined above
             "`node_id` Nullable(String)",
@@ -79,9 +87,11 @@ def setup_clickhouse(host, port, user, password, db_name, table_name):
             "`node_type` Nullable(String)",
             "`parent_interface` Nullable(String)",
             "`pop.id` Nullable(String)",
+            "`pop.locality` Nullable(String)",
             "`pop.name` Nullable(String)",
             "`pop.type` Nullable(String)",
             "`service.description` Nullable(String)",
+            "`service.contracted_bandwidth` Nullable(String)",
             "`service.direction` Nullable(String)",
             "`service.entity` Nullable(String)",
             "`service.entity_id` Nullable(String)",
@@ -121,7 +131,7 @@ def setup_clickhouse(host, port, user, password, db_name, table_name):
             print(f"ClickHouse Error Details: {e.message}", file=sys.stderr)
         sys.exit(1)
     finally:
-        if "client" in locals() and client.is_connected:
+        if "client" in locals() and client:
             client.close()
             print("ClickHouse connection closed.")
 
