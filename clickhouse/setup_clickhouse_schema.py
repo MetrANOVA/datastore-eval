@@ -1,161 +1,118 @@
 import argparse
 import sys
+from pathlib import Path
 
 import clickhouse_connect
 
 
-def setup_clickhouse(host, port, user, password, db_name, table_name):
+def setup_clickhouse_from_file(
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    db_name: str,
+    sql_file_path: Path,
+):
     """
-    Connects to ClickHouse, creates the database and the time series table
-    based on the provided metadata structure.
+    Connects to ClickHouse, ensures the database exists, and executes
+    the SQL commands (e.g., CREATE TABLE) from a specified file.
 
     Args:
-        host (str): ClickHouse host.
-        port (int): ClickHouse HTTP port (usually 8123).
-        user (str): ClickHouse user.
-        password (str): ClickHouse password.
-        db_name (str): Database name to create/use.
-        table_name (str): Table name to create.
+        host: ClickHouse host.
+        port: ClickHouse HTTP port.
+        user: ClickHouse user.
+        password: ClickHouse password.
+        db_name: Database name to ensure exists.
+        sql_file_path: Path to the SQL file containing schema definitions.
     """
     print(f"Attempting to connect to ClickHouse at {host}:{port}...")
     try:
-        # Connect without specifying database initially to ensure CREATE DATABASE works
+        # Connect without specifying database initially
         client = clickhouse_connect.get_client(
             host=host,
             port=port,
             user=user,
             password=password,
             connect_timeout=10,
-            send_receive_timeout=30,
+            send_receive_timeout=60,
         )
-        client.ping()  # Verify connection
+        client.ping()
         print("ClickHouse connection successful.")
     except Exception as e:
         print(f"Error connecting to ClickHouse: {e}", file=sys.stderr)
         sys.exit(1)
 
     try:
-        # --- Create Database ---
-        print(f"Creating database '{db_name}' if it doesn't exist...")
-        client.command(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+        # --- Ensure Database Exists ---
+        print(f"Ensuring database '{db_name}' exists...")
+        client.command(f"CREATE DATABASE IF NOT EXISTS `{db_name}`")  # Quote db name
         print(f"Database '{db_name}' is ready.")
-        # Reconnect or set database context
-        client.database = db_name
+        # Set database context for subsequent commands if needed, though
+        # the SQL file should ideally contain qualified table names (db.table)
+        # client.database = db_name
 
-        # --- Define Columns based on Sample ---
-        # Required base fields + measurements
-        columns = [
-            "`timestamp` DateTime64(3, 'UTC')",  # Millisecond precision, stored as UTC
-            "`node` String",  # REQUIRED based on sample
-            "`intf` String",  # REQUIRED based on sample (interface name)
-            "`aggregate(values.input, 60, average)` Float64",  # Measurement
-            "`aggregate(values.output, 60, average)` Float64",  # Measurement
-        ]
+        # --- Read SQL Schema File ---
+        print(f"Reading schema definition from: {sql_file_path}")
+        try:
+            with open(sql_file_path, "r", encoding="utf-8") as f_sql:
+                sql_command = f_sql.read()
+            if not sql_command.strip():
+                print(f"Error: SQL file '{sql_file_path}' is empty.", file=sys.stderr)
+                sys.exit(1)
+            print("SQL schema file read successfully.")
+        except FileNotFoundError:
+            print(f"Error: SQL file not found at '{sql_file_path}'", file=sys.stderr)
+            sys.exit(1)
+        except IOError as e:
+            print(f"Error reading SQL file '{sql_file_path}': {e}", file=sys.stderr)
+            sys.exit(1)
 
-        # Metadata fields from sample - make them Nullable Strings
-        # Using backticks `` for keys with dots or special characters
-        metadata_columns = [
-            "`alternate_intf` Nullable(String)",
-            "`circuit.carrier` Nullable(String)",
-            "`circuit.carrier_id` Nullable(String)",  # Keeping IDs as String for flexibility
-            "`circuit.carrier_type` Nullable(String)",
-            "`circuit.circuit_id` Nullable(String)",
-            "`circuit.customer` Nullable(String)",
-            "`circuit.customer_id` Nullable(String)",
-            "`circuit.customer_type` Nullable(String)",
-            "`circuit.description` Nullable(String)",
-            "`circuit.name` Nullable(String)",
-            "`circuit.owner` Nullable(String)",
-            "`circuit.owner_id` Nullable(String)",
-            "`circuit.role` Nullable(String)",  # Storing the list-like string as String
-            "`circuit.speed` Nullable(String)",
-            "`circuit.type` Nullable(String)",
-            "`contracted_bandwidth` Nullable(String)",  # Keeping as String due to '0' example
-            "`description` Nullable(String)",
-            "`entity.contracted_bandwidth` Nullable(String)",
-            "`entity.id` Nullable(String)",
-            "`entity.type` Nullable(String)",
-            "`entity.name` Nullable(String)",
-            "`interface_address` Nullable(String)",  # Storing '[]' as String
-            "`interface_id` Nullable(String)",
-            "`max_bandwidth` Nullable(String)",
-            "`network` Nullable(String)",
-            # Skipping node, intf, input, output as they are defined above
-            "`node_id` Nullable(String)",
-            "`node_management_address` Nullable(String)",  # Could be IP type, but String is safer
-            "`node_role` Nullable(String)",
-            "`node_type` Nullable(String)",
-            "`parent_interface` Nullable(String)",
-            "`pop.id` Nullable(String)",
-            "`pop.locality` Nullable(String)",
-            "`pop.name` Nullable(String)",
-            "`pop.type` Nullable(String)",
-            "`service.description` Nullable(String)",
-            "`service.contracted_bandwidth` Nullable(String)",
-            "`service.direction` Nullable(String)",
-            "`service.entity` Nullable(String)",
-            "`service.entity_id` Nullable(String)",
-            "`service.entity_roles` Nullable(String)",  # Storing '[]' as String
-            "`service.entity_type` Nullable(String)",
-            "`service.name` Nullable(String)",
-            "`service.service_id` Nullable(String)",
-            "`service.type` Nullable(String)",
-            "`type` Nullable(String)",  # Matches the last field in sample's metadata
-        ]
-        columns.extend(metadata_columns)
-
-        column_definitions = ",\n    ".join(columns)
-
-        # --- Create Table Statement ---
-        create_table_sql = f"""
-        CREATE TABLE IF NOT EXISTS {db_name}.{table_name} (
-            {column_definitions}
-        )
-        ENGINE = MergeTree()
-        PARTITION BY toYYYYMM(timestamp)       -- Partition by month
-        ORDER BY (node, intf, timestamp)       -- ORDER BY required fields + timestamp
-        """
-
-        print(f"Creating table '{db_name}.{table_name}' if it doesn't exist...")
-        print("--- Schema ---")
-        print(create_table_sql)
-        print("--------------")
-
-        client.command(create_table_sql)
-        print(f"Table '{db_name}.{table_name}' is ready.")
+        # --- Execute SQL Command ---
+        # This will likely contain the CREATE TABLE statement
+        print(f"Executing schema setup SQL from {sql_file_path.name}...")
+        # client.command() can execute multi-statement SQL if separated by semicolons
+        # and appropriate server settings are enabled, but typically expect one main command here.
+        client.command(sql_command)
+        print(f"Successfully executed schema setup from {sql_file_path.name}.")
 
     except Exception as e:
         print(f"An error occurred during setup: {e}", file=sys.stderr)
-        # Attempt to get more details from ClickHouse errors if possible
         if hasattr(e, "message") and e.message:
             print(f"ClickHouse Error Details: {e.message}", file=sys.stderr)
         sys.exit(1)
     finally:
+        # Corrected disconnect logic
         if "client" in locals() and client:
-            client.close()
-            print("ClickHouse connection closed.")
+            try:
+                client.close()
+                print("ClickHouse connection closed.")
+            except Exception as e:
+                print(f"Error during ClickHouse connection close: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Create ClickHouse Database and Time Series Table based on specific schema."
+        description="Ensure ClickHouse DB exists and execute schema setup from SQL file.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument("--host", default="localhost", help="ClickHouse host")
+    parser.add_argument("--port", type=int, default=8123, help="ClickHouse HTTP port")
+    parser.add_argument("--user", default="default", help="ClickHouse user")
+    parser.add_argument("--password", default="", help="ClickHouse password")
+    parser.add_argument("--db", required=True, help="Database name to ensure exists.")
     parser.add_argument(
-        "--host", default="localhost", help="ClickHouse host (default: localhost)"
+        "--sql-file",
+        required=True,
+        type=Path,
+        help="Path to the SQL file containing the CREATE TABLE statement(s).",
     )
-    parser.add_argument(
-        "--port", type=int, default=8123, help="ClickHouse HTTP port (default: 8123)"
-    )
-    parser.add_argument(
-        "--user", default="default", help="ClickHouse user (default: default)"
-    )
-    parser.add_argument(
-        "--password", default="", help="ClickHouse password (default: empty)"
-    )
-    parser.add_argument("--db", required=True, help="Database name to create/use")
-    parser.add_argument("--table", required=True, help="Table name to create")
 
     args = parser.parse_args()
-    setup_clickhouse(
-        args.host, args.port, args.user, args.password, args.db, args.table
+    setup_clickhouse_from_file(
+        host=args.host,
+        port=args.port,
+        user=args.user,
+        password=args.password,
+        db_name=args.db,
+        sql_file_path=args.sql_file,
     )
