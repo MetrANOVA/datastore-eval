@@ -1,3 +1,5 @@
+# create_mongo_timeseries_collection.py (Corrected Wildcard Index)
+
 import argparse
 import sys
 
@@ -7,8 +9,9 @@ from pymongo.errors import CollectionInvalid, OperationFailure
 
 def create_timeseries_collection(mongo_uri, db_name, collection_name):
     """
-    Connects to MongoDB and creates a time series collection with appropriate options
-    and a compound index on metadata fields.
+    Connects to MongoDB and creates a time series collection with appropriate options,
+    a specific compound index on device/interfaceName, and a wildcard index
+    on the rest of the metadata.
 
     Args:
         mongo_uri (str): The MongoDB connection string.
@@ -18,78 +21,123 @@ def create_timeseries_collection(mongo_uri, db_name, collection_name):
     print(f"Attempting to connect to MongoDB at: {mongo_uri}")
     try:
         client = MongoClient(mongo_uri)
-        # The ismaster command is cheap and does not require auth.
-        client.admin.command("ismaster")
+        client.admin.command("ping")
         print("MongoDB connection successful.")
     except Exception as e:
-        print(f"Error connecting to MongoDB: {e}")
+        print(f"Error connecting to MongoDB: {e}", file=sys.stderr)
         sys.exit(1)
 
     db = client[db_name]
     print(f"Using database: '{db_name}'")
 
-    # --- Time Series Collection Options ---
-    # 'timestamp' will be the name of the field holding the time
-    # 'metadata' will be the name of the sub-document holding metadata fields
     timeseries_options = {
         "timeField": "timestamp",
         "metaField": "metadata",
-        # 'granularity': 'seconds' # Optional: Helps optimize storage if data is regular.
-        # Can be 'seconds', 'minutes', 'hours'.
-        # Omit if interval varies (e.g., 30s and 60s mixed).
     }
 
-    # --- Create the Time Series Collection ---
     try:
         db.create_collection(collection_name, timeseries=timeseries_options)
         print(f"Successfully created time series collection: '{collection_name}'")
     except CollectionInvalid:
         print(f"Collection '{collection_name}' already exists.")
-        # Optionally check if it's actually a time series collection
-        coll_options = db.command(
-            {"listCollections": 1, "filter": {"name": collection_name}}
-        )["cursor"]["firstBatch"][0].get("options", {})
-        if coll_options.get("timeseries"):
-            print(f"'{collection_name}' is already a time series collection.")
-        else:
-            print(
-                f"Error: Collection '{collection_name}' exists but is NOT a time series collection."
+        try:
+            coll_info_list = list(
+                db.list_collections(filter={"name": collection_name}, limit=1)
             )
-            print("Please drop it manually or choose a different name.")
+            if not coll_info_list:
+                raise LookupError(
+                    f"Collection {collection_name} reported existing but not found."
+                )
+            coll_options = coll_info_list[0].get("options", {})
+            if coll_options.get("timeseries"):
+                print(f"'{collection_name}' is already a time series collection.")
+            else:
+                print(
+                    f"Error: Collection '{collection_name}' exists but is NOT a time series collection.",
+                    file=sys.stderr,
+                )
+                client.close()
+                sys.exit(1)
+        except Exception as list_coll_e:
+            print(
+                f"Error verifying existing collection '{collection_name}': {list_coll_e}",
+                file=sys.stderr,
+            )
             client.close()
             sys.exit(1)
     except OperationFailure as e:
-        print(f"Operation Failure during collection creation: {e.details}")
+        print(
+            f"Operation Failure during collection creation: {e.details}",
+            file=sys.stderr,
+        )
         client.close()
         sys.exit(1)
     except Exception as e:
-        print(f"An unexpected error occurred during collection creation: {e}")
+        print(
+            f"An unexpected error occurred during collection creation: {e}",
+            file=sys.stderr,
+        )
         client.close()
         sys.exit(1)
 
-    # --- Create Index on Metadata Fields ---
-    # Indexing the metaField components is crucial for performance
     collection = db[collection_name]
-    index_name = "metadata_node_interface_idx"
+
+    # --- 1. Specific Compound Index for Primary Identifiers ---
+    index_name_primary = "metadata_device_interface_idx"
+    index_keys_primary = [("metadata.device", 1), ("metadata.interfaceName", 1)]
     try:
-        # Create a compound index on the required metadata fields within the metaField
-        collection.create_index(
-            [("metadata.nodeName", 1), ("metadata.interfaceName", 1)], name=index_name
-        )
+        collection.create_index(index_keys_primary, name=index_name_primary)
         print(
-            f"Successfully created compound index '{index_name}' on metadata.nodeName and metadata.interfaceName."
+            f"Successfully created primary compound index '{index_name_primary}' on {index_keys_primary}."
         )
     except OperationFailure as e:
-        # Check if the index already exists (error code 85 for IndexOptionsConflict, 86 for IndexKeySpecsConflict)
-        if e.code in [85, 86]:
-            print(f"Index '{index_name}' likely already exists.")
-            # You could verify by listing indexes if needed: list(collection.list_indexes())
+        if (
+            e.code in [85, 86]
+            or "Index already exists" in str(e.details).lower()
+            or "index with matching name" in str(e.details).lower()
+        ):
+            print(
+                f"Primary compound index '{index_name_primary}' likely already exists."
+            )
         else:
-            print(f"Operation Failure during index creation: {e.details}")
-            # Decide if you want to exit here or continue
+            print(
+                f"Operation Failure during primary index creation: {e.details}",
+                file=sys.stderr,
+            )
     except Exception as e:
-        print(f"An unexpected error occurred during index creation: {e}")
-        # Decide if you want to exit here or continue
+        print(
+            f"An unexpected error occurred during primary index creation: {e}",
+            file=sys.stderr,
+        )
+
+    # --- 2. Wildcard Index for All Other Metadata Fields ---
+    # Corrected syntax:
+    index_name_wildcard = "metadata_all_subfields_wildcard_idx"  # More descriptive name
+    index_keys_wildcard = {
+        "metadata.$**": 1
+    }  # Apply wildcard to all paths under 'metadata'
+    try:
+        collection.create_index(index_keys_wildcard, name=index_name_wildcard)
+        print(
+            f"Successfully created wildcard index '{index_name_wildcard}' on all 'metadata' sub-fields."
+        )
+    except OperationFailure as e:
+        if (
+            e.code in [85, 86]
+            or "Index already exists" in str(e.details).lower()
+            or "index with matching name" in str(e.details).lower()
+        ):
+            print(f"Wildcard index '{index_name_wildcard}' likely already exists.")
+        else:
+            print(
+                f"Operation Failure during wildcard index creation for key {index_keys_wildcard}: {e.details}",
+                file=sys.stderr,
+            )
+    except Exception as e:
+        print(
+            f"An unexpected error occurred during wildcard index creation for key {index_keys_wildcard}: {e}",
+            file=sys.stderr,
+        )
 
     print("Setup complete.")
     client.close()
@@ -97,7 +145,7 @@ def create_timeseries_collection(mongo_uri, db_name, collection_name):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Create a MongoDB Time Series Collection."
+        description="Create a MongoDB Time Series Collection with specific and wildcard indexes."
     )
     parser.add_argument(
         "--uri",
@@ -110,5 +158,4 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-
     create_timeseries_collection(args.uri, args.db, args.collection)

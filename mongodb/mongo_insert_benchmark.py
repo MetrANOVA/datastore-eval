@@ -1,3 +1,5 @@
+# insert_tsv_to_mongo_benchmark.py (Updated to discard specific fields)
+
 import argparse
 import csv
 import datetime
@@ -5,467 +7,471 @@ import os
 import statistics
 import sys
 import time
+from pathlib import Path
 
 from pymongo import MongoClient
 from pymongo.errors import BulkWriteError, ConnectionFailure
 
 # --- Configuration ---
-# Adjust these column names based on your exact TSV header
-TIMESTAMP_COL = "timestamp"
-INPUT_COL = "aggregate(values.input, 60, average)"  # Example name, change to your actual column name
-OUTPUT_COL = "aggregate(values.output, 60, average)"  # Example name, change to your actual column name
-NODE_COL = "node"
-INTERFACE_COL = "intf"
+TSV_TIMESTAMP_COL = "@timestamp"
+TSV_NODE_COL = "meta.device"
+TSV_INTERFACE_COL = "meta.name"
+REQUIRED_TSV_COLS = [TSV_TIMESTAMP_COL, TSV_NODE_COL, TSV_INTERFACE_COL]
+FIXED_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
-# List required columns for validation
-REQUIRED_COLS = [TIMESTAMP_COL, INPUT_COL, OUTPUT_COL, NODE_COL, INTERFACE_COL]
+# --- Fields to explicitly discard from TSV ---
+DISCARD_TSV_FIELDS = {"@collect_time_min", "@exit_time", "@processing_time"}
 
 
-def parse_timestamp(ts_string, fmt="%Y-%m-%dT%H:%M:%S.%fZ"):
-    """
-    Parses a timestamp string into a datetime object.
-    Handles potential timezone info (assumes UTC if Z present).
-    Modify the 'fmt' string if your timestamp format is different.
-    Common formats:
-    ISO 8601 with Z: '%Y-%m-%dT%H:%M:%S.%fZ' or '%Y-%m-%dT%H:%M:%SZ'
-    ISO 8601 with offset: '%Y-%m-%dT%H:%M:%S.%f%z'
-    Unix timestamp (seconds): handle with datetime.datetime.fromtimestamp(float(ts_string), tz=datetime.timezone.utc)
-    """
+# --- Helper Function (parse_timestamp) ---
+def parse_timestamp(ts_string):
+    """Parses timestamp string using the FIXED_TIMESTAMP_FORMAT."""
+    fmt = FIXED_TIMESTAMP_FORMAT
     try:
-        # Handle Unix timestamps separately if needed
-        if ts_string.isdigit() or (
-            "." in ts_string and ts_string.replace(".", "", 1).isdigit()
-        ):
-            return datetime.datetime.fromtimestamp(
-                float(ts_string), tz=datetime.timezone.utc
-            )
-
-        # Attempt parsing with specified format
-        # Handle potential 'Z' indicating UTC
+        ts_string_adj, fmt_adj = ts_string, fmt
         if fmt.endswith("Z") and ts_string.endswith("Z"):
-            ts_string = ts_string[:-1] + "+0000"
-            fmt = fmt[:-1] + "%z"  # Python needs numeric offset
-
-        dt = datetime.datetime.strptime(ts_string, fmt)
-
-        # If timezone is naive, assume UTC (MongoDB stores in UTC)
+            ts_string_adj, fmt_adj = ts_string[:-1] + "+0000", fmt[:-1] + "%z"
+        if "." not in ts_string_adj and "%f" in fmt_adj:
+            if (
+                "%z" in fmt_adj
+                and len(ts_string_adj) > 6
+                and ts_string_adj[-6] in ("+", "-")
+            ):
+                offset_part = ts_string_adj[-6:]
+                base_ts_part = ts_string_adj[:-6]
+                ts_string_adj = base_ts_part + ".000" + offset_part
+            elif "%z" not in fmt_adj:
+                ts_string_adj += ".000"
+        dt = datetime.datetime.strptime(ts_string_adj, fmt_adj)
         if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
             dt = dt.replace(tzinfo=datetime.timezone.utc)
         else:
-            # Convert aware datetime to UTC
             dt = dt.astimezone(datetime.timezone.utc)
         return dt
-    except ValueError as e:
-        print(
-            f"Error parsing timestamp '{ts_string}' with format '{fmt}': {e}",
-            file=sys.stderr,
-        )
-        return None
-    except Exception as e:
-        print(f"Unexpected error parsing timestamp '{ts_string}': {e}", file=sys.stderr)
+    except Exception:
         return None
 
 
+# --- Main Function ---
 def insert_data_and_benchmark(
-    mongo_uri, db_name, collection_name, data_dir, batch_size, ts_format, output_file
+    mongo_uri,
+    db_name,
+    collection_name,
+    tsv_file: Path,
+    batch_size: int,
+    offset: int,
+    limit: int,
+    output_file: str,
 ):
     """
-    Reads TSV files, inserts data into MongoDB Time Series collection,
-    and benchmarks the process.
-
-    Args:
-        mongo_uri (str): MongoDB connection URI.
-        db_name (str): Database name.
-        collection_name (str): Time series collection name.
-        data_dir (str): Directory containing the TSV files.
-        batch_size (int): Number of documents to insert per batch.
-        ts_format (str): The format string for parsing timestamps (strptime format).
-        output_file (str): Path to write benchmark results (CSV).
+    Reads a segment of a large TSV, inserts into MongoDB Time Series,
+    and benchmarks. Pauses after offset skipping.
+    Ensures all 'values.*' fields are handled, storing null if empty/invalid.
+    Discards specified fields.
     """
-    print(f"Starting data insertion process...")
+    print(f"Starting data insertion process for MongoDB...")
+    print(f"Processing file: {tsv_file}")
+    print(f"Row Offset: {offset}, Row Limit: {'No limit' if limit < 0 else limit}")
+    print(f"Batch size: {batch_size}")
+    print(f"Using fixed timestamp format: {FIXED_TIMESTAMP_FORMAT}")
+    print(f"Discarding TSV fields: {DISCARD_TSV_FIELDS}")
     print(f"Connecting to MongoDB: {mongo_uri}")
+    print(
+        f"!!! IMPORTANT: Output file is '{output_file}'. Ensure uniqueness if running in parallel. !!!"
+    )
+
+    if not tsv_file.is_file():
+        print(f"Error: Input TSV file not found at '{tsv_file}'", file=sys.stderr)
+        sys.exit(1)
     try:
         client = MongoClient(mongo_uri)
         db = client[db_name]
         collection = db[collection_name]
-        # Verify connection
-        client.admin.command("ismaster")
+        client.admin.command("ping")
         print(f"Connected to DB '{db_name}', Collection '{collection_name}'.")
-    except ConnectionFailure as e:
-        print(f"Error connecting to MongoDB: {e}")
-        sys.exit(1)
     except Exception as e:
-        print(f"An unexpected error occurred during connection: {e}")
-        sys.exit(1)
-
-    if not os.path.isdir(data_dir):
-        print(f"Error: Data directory '{data_dir}' not found.")
+        print(f"Error connecting to MongoDB: {e}", file=sys.stderr)
         sys.exit(1)
 
     benchmark_results = []
-    total_docs_inserted = 0
-    total_insertion_time = 0.0
-    batch_durations = []
-    files_processed = 0
-    files_skipped = 0
+    total_docs_attempted_segment = 0
+    total_docs_parsed_segment = 0
+    total_docs_inserted_segment = 0
+    total_insertion_time_segment = 0.0
+    all_batch_durations = []
+    total_batches_processed = 0
+    file_processing_error = False
 
-    print(f"Scanning directory: {data_dir}")
-    for filename in os.listdir(data_dir):
-        if filename.lower().endswith(".tsv"):
-            filepath = os.path.join(data_dir, filename)
-            print(f"\nProcessing file: {filename}")
-            files_processed += 1
-            docs_in_file = 0
-            batches_in_file = 0
-            file_insertion_time = 0.0
-            batch = []
-            first_row = True  # Flag to check header
-
-            try:
-                with open(filepath, "r", newline="", encoding="utf-8") as tsvfile:
-                    reader = csv.reader(tsvfile, delimiter="\t")
-                    header = []
-
-                    for i, row in enumerate(reader):
-                        if not row:  # Skip empty rows
-                            continue
-
-                        if first_row:
-                            header = [h.strip() for h in row]
-                            # --- Header Validation ---
-                            missing_cols = [
-                                col for col in REQUIRED_COLS if col not in header
-                            ]
-                            if missing_cols:
-                                print(
-                                    f"  ERROR: File '{filename}' is missing required columns: {missing_cols}. Skipping file."
-                                )
-                                files_skipped += 1
-                                files_processed -= (
-                                    1  # Don't count skipped file in processed total
-                                )
-                                break  # Stop processing this file
-
-                            print(f"  Detected Headers: {header}")
-                            optional_meta_cols = [
-                                h for h in header if h not in REQUIRED_COLS
-                            ]
-                            print(f"  Optional Metadata Fields: {optional_meta_cols}")
-                            first_row = False
-                            continue  # Skip header row from data processing
-
-                        # --- Data Row Processing ---
-                        if len(row) != len(header):
-                            print(
-                                f"  WARNING: Row {i+1} has {len(row)} columns, expected {len(header)}. Skipping row: {row}",
-                                file=sys.stderr,
-                            )
-                            continue
-
-                        row_data = dict(zip(header, row))
-
-                        # Parse timestamp
-                        timestamp = parse_timestamp(
-                            row_data.get(TIMESTAMP_COL, ""), ts_format
-                        )
-                        if timestamp is None:
-                            print(
-                                f"  WARNING: Row {i+1}: Could not parse timestamp '{row_data.get(TIMESTAMP_COL)}'. Skipping row.",
-                                file=sys.stderr,
-                            )
-                            continue
-
-                        # Parse measurements (add more specific error handling if needed)
-                        try:
-                            input_val = float(row_data[INPUT_COL])
-                            output_val = float(row_data[OUTPUT_COL])
-                        except (ValueError, TypeError) as e:
-                            print(
-                                f"  WARNING: Row {i+1}: Error parsing numeric data ({INPUT_COL} or {OUTPUT_COL}). Skipping row: {e} - Row content: {row_data}",
-                                file=sys.stderr,
-                            )
-                            continue
-
-                        # --- Construct Metadata Sub-document ---
-                        metadata = {
-                            NODE_COL: row_data.get(NODE_COL),
-                            INTERFACE_COL: row_data.get(INTERFACE_COL),
-                        }
-                        # Add optional metadata fields found in the header
-                        for meta_col in optional_meta_cols:
-                            if (
-                                meta_col in row_data and row_data[meta_col]
-                            ):  # Add if present and not empty
-                                metadata[meta_col] = row_data[meta_col]
-
-                        # --- Construct MongoDB Document ---
-                        document = {
-                            "timestamp": timestamp,
-                            "metadata": metadata,
-                            # Add measurements directly (not nested under a sub-field usually)
-                            "input": input_val,
-                            "output": output_val,
-                            # Add any other top-level fields if needed from row_data
-                        }
-                        batch.append(document)
-
-                        # --- Insert Batch when Full ---
-                        if len(batch) >= batch_size:
-                            start_time = time.monotonic()
-                            try:
-                                result = collection.insert_many(
-                                    batch, ordered=False
-                                )  # ordered=False can be faster if failures are okay
-                                duration = time.monotonic() - start_time
-                                inserted_count = len(result.inserted_ids)
-                                batch_durations.append(duration)
-                                benchmark_results.append(
-                                    {
-                                        "file": filename,
-                                        "batch_number": batches_in_file + 1,
-                                        "docs_in_batch": len(batch),
-                                        "docs_inserted": inserted_count,
-                                        "time_seconds": duration,
-                                    }
-                                )
-                                total_docs_inserted += inserted_count
-                                docs_in_file += inserted_count
-                                total_insertion_time += duration
-                                file_insertion_time += duration
-                                batches_in_file += 1
-                                # print(f"    Inserted batch {batches_in_file} ({inserted_count} docs) in {duration:.4f}s")
-
-                            except BulkWriteError as bwe:
-                                duration = time.monotonic() - start_time
-                                print(
-                                    f"  ERROR: Bulk write error in batch {batches_in_file + 1}: {len(bwe.details.get('writeErrors', []))} errors."
-                                )
-                                # Handle partial success if needed
-                                inserted_count = bwe.details.get("nInserted", 0)
-                                batch_durations.append(
-                                    duration
-                                )  # Still record time taken
-                                benchmark_results.append(
-                                    {
-                                        "file": filename,
-                                        "batch_number": batches_in_file + 1,
-                                        "docs_in_batch": len(batch),
-                                        "docs_inserted": inserted_count,  # Record actual insertions
-                                        "time_seconds": duration,
-                                        "error": "BulkWriteError",
-                                    }
-                                )
-                                total_docs_inserted += inserted_count
-                                docs_in_file += inserted_count
-                                total_insertion_time += duration
-                                file_insertion_time += duration
-                                batches_in_file += 1
-                                # Log more details if necessary: print(bwe.details)
-                            except Exception as e:
-                                duration = time.monotonic() - start_time
-                                print(
-                                    f"  ERROR: Unexpected error inserting batch {batches_in_file + 1}: {e}"
-                                )
-                                benchmark_results.append(
-                                    {
-                                        "file": filename,
-                                        "batch_number": batches_in_file + 1,
-                                        "docs_in_batch": len(batch),
-                                        "docs_inserted": 0,
-                                        "time_seconds": duration,
-                                        "error": str(e),
-                                    }
-                                )
-                                # Decide whether to stop or continue
-
-                            batch = []  # Reset batch
-
-            except FileNotFoundError:
-                print(
-                    f"  ERROR: File '{filename}' not found during processing (unexpected). Skipping."
-                )
-                files_skipped += 1
-                files_processed -= 1
-                continue
-            except Exception as e:
-                print(
-                    f"  ERROR: Failed to process file '{filename}' due to unexpected error: {e}. Skipping file."
-                )
-                files_skipped += 1
-                files_processed -= 1
-                # Ensure batch is cleared if error occurred mid-file
-                batch = []
-                continue
-
-            # --- Insert Final Partial Batch (if any) ---
-            if batch:
-                start_time = time.monotonic()
-                try:
-                    result = collection.insert_many(batch, ordered=False)
-                    duration = time.monotonic() - start_time
-                    inserted_count = len(result.inserted_ids)
-                    batch_durations.append(duration)
-                    benchmark_results.append(
-                        {
-                            "file": filename,
-                            "batch_number": batches_in_file + 1,
-                            "docs_in_batch": len(batch),
-                            "docs_inserted": inserted_count,
-                            "time_seconds": duration,
-                        }
-                    )
-                    total_docs_inserted += inserted_count
-                    docs_in_file += inserted_count
-                    total_insertion_time += duration
-                    file_insertion_time += duration
-                    batches_in_file += 1
-                    # print(f"    Inserted final batch {batches_in_file} ({inserted_count} docs) in {duration:.4f}s")
-
-                except BulkWriteError as bwe:
-                    duration = time.monotonic() - start_time
-                    print(
-                        f"  ERROR: Bulk write error in final batch: {len(bwe.details.get('writeErrors', []))} errors."
-                    )
-                    inserted_count = bwe.details.get("nInserted", 0)
-                    batch_durations.append(duration)
-                    benchmark_results.append(
-                        {
-                            "file": filename,
-                            "batch_number": batches_in_file + 1,
-                            "docs_in_batch": len(batch),
-                            "docs_inserted": inserted_count,
-                            "time_seconds": duration,
-                            "error": "BulkWriteError",
-                        }
-                    )
-                    total_docs_inserted += inserted_count
-                    docs_in_file += inserted_count
-                    total_insertion_time += duration
-                    file_insertion_time += duration
-                    batches_in_file += 1
-                except Exception as e:
-                    duration = time.monotonic() - start_time
-                    print(f"  ERROR: Unexpected error inserting final batch: {e}")
-                    batch_durations.append(duration)
-                    benchmark_results.append(
-                        {
-                            "file": filename,
-                            "batch_number": batches_in_file + 1,
-                            "docs_in_batch": len(batch),
-                            "docs_inserted": 0,
-                            "time_seconds": duration,
-                            "error": str(e),
-                        }
-                    )
-
-            print(
-                f"  Finished processing file: {filename}. Inserted {docs_in_file} documents in {batches_in_file} batches. Total time for file: {file_insertion_time:.4f}s"
-            )
-
-    print("\n--- Insertion Summary ---")
-    print(f"Processed {files_processed} files.")
-    if files_skipped > 0:
-        print(f"Skipped {files_skipped} files due to errors.")
-    print(f"Total documents inserted: {total_docs_inserted}")
-    print(f"Total insertion time: {total_insertion_time:.4f} seconds")
-
-    if total_insertion_time > 0:
-        avg_docs_per_sec = total_docs_inserted / total_insertion_time
-        print(f"Average insertion rate: {avg_docs_per_sec:.2f} docs/second")
-    else:
-        print("Average insertion rate: N/A (no insertion time recorded)")
-
-    if batch_durations:
-        print("\nBatch Performance Statistics:")
-        print(f"  Total batches: {len(batch_durations)}")
-        print(
-            f"  Average batch insert time: {statistics.mean(batch_durations):.6f} seconds"
-        )
-        print(
-            f"  Median batch insert time: {statistics.median(batch_durations):.6f} seconds"
-        )
-        print(f"  Min batch insert time: {min(batch_durations):.6f} seconds")
-        print(f"  Max batch insert time: {max(batch_durations):.6f} seconds")
-        if len(batch_durations) > 1:
-            print(
-                f"  Std Dev batch insert time: {statistics.stdev(batch_durations):.6f} seconds"
-            )
-    else:
-        print("\nNo batch performance statistics available.")
-
-    # --- Write Benchmark Results to CSV ---
     try:
-        with open(output_file, "w", newline="", encoding="utf-8") as outfile:
+        print(f"Opening file: {tsv_file.name}")
+        with open(tsv_file, "r", newline="", encoding="utf-8") as tsvfile:
+            reader = csv.DictReader(tsvfile, delimiter="\t")
+            tsv_header = reader.fieldnames
+            if not tsv_header:
+                raise ValueError("Header row is empty")
+            print(
+                f"  TSV Headers ({len(tsv_header)}): {str(tsv_header[:5]) + ('...' if len(tsv_header) > 5 else '')}"
+            )
+            missing_req = [col for col in REQUIRED_TSV_COLS if col not in tsv_header]
+            if missing_req:
+                raise ValueError(f"File missing required TSV headers: {missing_req}")
+
+            print(f"Skipping {offset} data rows...")
+            rows_processed_for_limit_check = 0
+            rows_skipped_count = 0
+            if offset > 0:
+                try:
+                    for _ in range(offset):
+                        next(reader)
+                        rows_skipped_count += 1
+                except StopIteration:
+                    print(
+                        f"Warning: Offset ({offset}) exceeded total data rows.",
+                        file=sys.stderr,
+                    )
+                    file_processing_error = True
+            print(f"Finished skipping {rows_skipped_count} data rows.")
+
+            if not file_processing_error:
+                try:
+                    limit_str = (
+                        "None (full file after offset)" if limit < 0 else str(limit)
+                    )
+                    input(
+                        f"Offset {offset} reached for {tsv_file.name}. Press Enter to start processing (limit: {limit_str})..."
+                    )
+                    print(
+                        f"Resuming... Processing rows for offset {offset}, limit {limit_str}"
+                    )
+                except KeyboardInterrupt:
+                    print("\nCtrl+C detected. Exiting.")
+                    sys.exit(1)
+
+            if not file_processing_error:
+                batch = []
+                rows_attempted_in_current_batch = 0
+                rows_parsed_in_current_batch = 0
+                for i, row_data_dict in enumerate(reader):
+                    if limit >= 0 and rows_processed_for_limit_check >= limit:
+                        print(f"Reached processing limit of {limit} data rows.")
+                        break
+
+                    current_data_row_index = i + 1
+                    total_docs_attempted_segment += 1
+                    rows_attempted_in_current_batch += 1
+                    valid_doc = True
+                    parse_errors = []
+                    mongo_doc = {}
+                    metadata_subdoc = {}
+                    measurements = {}
+
+                    ts_val = row_data_dict.get(TSV_TIMESTAMP_COL)
+                    if ts_val:
+                        parsed_datetime = parse_timestamp(ts_val)
+                        if parsed_datetime:
+                            mongo_doc["timestamp"] = parsed_datetime
+                        else:
+                            parse_errors.append(f"Invalid TS '{ts_val}'")
+                            valid_doc = False
+                    else:
+                        parse_errors.append(f"Missing TS ('{TSV_TIMESTAMP_COL}')")
+                        valid_doc = False
+
+                    if valid_doc:
+                        node_val = row_data_dict.get(TSV_NODE_COL)
+                        intf_val = row_data_dict.get(TSV_INTERFACE_COL)
+
+                        if node_val:
+                            metadata_subdoc["device"] = node_val
+                        else:
+                            parse_errors.append(f"Missing/Empty '{TSV_NODE_COL}'")
+                            valid_doc = False
+
+                        if intf_val:
+                            metadata_subdoc["interfaceName"] = intf_val
+                        else:
+                            parse_errors.append(f"Missing/Empty '{TSV_INTERFACE_COL}'")
+                            valid_doc = False
+
+                        for key, value in row_data_dict.items():
+                            # 1. Skip already processed special fields
+                            if (
+                                key == TSV_TIMESTAMP_COL
+                                or key == TSV_NODE_COL
+                                or key == TSV_INTERFACE_COL
+                            ):
+                                continue
+
+                            # 2. Skip explicitly discarded fields
+                            if key in DISCARD_TSV_FIELDS:  # New logic to discard
+                                # print(f"  DEBUG Line ~{rows_skipped_count+i+2}: Discarding field '{key}'") # Optional debug
+                                continue
+
+                            # 3. Process 'values.*' fields
+                            if key.startswith("values."):
+                                if value is None or value == "":
+                                    measurements[key] = None
+                                else:
+                                    try:
+                                        measurements[key] = float(value)
+                                    except (ValueError, TypeError):
+                                        parse_errors.append(
+                                            f"Non-numeric for '{key}': '{value}'. Storing as null."
+                                        )
+                                        measurements[key] = None
+                            # 4. Process other fields as general metadata
+                            else:
+                                if value is not None and value != "":
+                                    metadata_subdoc[key] = value
+
+                    if valid_doc:
+                        mongo_doc["metadata"] = metadata_subdoc
+                        mongo_doc.update(measurements)
+                        batch.append(mongo_doc)
+                        rows_parsed_in_current_batch += 1
+                        total_docs_parsed_segment += 1
+                    else:
+                        print(
+                            f"  WARN Row {current_data_row_index} (file line ~{rows_skipped_count+i+2}): Skipping: {'; '.join(parse_errors)}",
+                            file=sys.stderr,
+                        )
+
+                    rows_processed_for_limit_check += 1
+
+                    if len(batch) >= batch_size:
+                        total_batches_processed += 1
+                        # (Batch insertion logic remains the same here and for final batch)
+                        print(
+                            f"  Inserting batch {total_batches_processed} ({len(batch)} docs)..."
+                        )
+                        start_time = time.monotonic()
+                        inserted_count = 0
+                        error_msg = ""
+                        try:
+                            result = collection.insert_many(batch, ordered=False)
+                            duration = time.monotonic() - start_time
+                            inserted_count = len(result.inserted_ids)
+                            all_batch_durations.append(duration)
+                            total_docs_inserted_segment += inserted_count
+                            total_insertion_time_segment += duration
+                            print(
+                                f"    Batch {total_batches_processed} OK ({inserted_count} docs) in {duration:.4f}s"
+                            )
+                        except BulkWriteError as bwe:
+                            duration = time.monotonic() - start_time
+                            inserted_count = bwe.details.get("nInserted", 0)
+                            if inserted_count > 0:
+                                all_batch_durations.append(duration)
+                            total_docs_inserted_segment += inserted_count
+                            total_insertion_time_segment += duration
+                            error_msg = f"BulkWriteError ({len(bwe.details.get('writeErrors',[]))} errors)"
+                            print(
+                                f"  ERROR: BW Err batch {total_batches_processed}: {error_msg}",
+                                file=sys.stderr,
+                            )
+                        except Exception as e:
+                            duration = time.monotonic() - start_time
+                            total_insertion_time_segment += duration
+                            error_msg = f"Unexpected Python error: {e}"
+                            print(
+                                f"  ERROR: Unexpected Err batch {total_batches_processed}: {error_msg}",
+                                file=sys.stderr,
+                            )
+                        benchmark_results.append(
+                            {
+                                "file": tsv_file.name,
+                                "batch_number": total_batches_processed,
+                                "docs_attempted_batch": rows_attempted_in_current_batch,
+                                "docs_parsed_batch": rows_parsed_in_current_batch,
+                                "docs_inserted_batch": inserted_count,
+                                "time_seconds": duration,
+                                "error": error_msg,
+                            }
+                        )
+                        batch = []
+                        rows_attempted_in_current_batch = 0
+                        rows_parsed_in_current_batch = 0
+
+                if batch:  # Final batch
+                    total_batches_processed += 1
+                    print(
+                        f"  Inserting final batch {total_batches_processed} ({len(batch)} docs)..."
+                    )
+                    start_time = time.monotonic()
+                    inserted_count = 0
+                    error_msg = ""
+                    try:
+                        result = collection.insert_many(batch, ordered=False)
+                        duration = time.monotonic() - start_time
+                        inserted_count = len(result.inserted_ids)
+                        all_batch_durations.append(duration)
+                        total_docs_inserted_segment += inserted_count
+                        total_insertion_time_segment += duration
+                        print(
+                            f"    Final Batch {total_batches_processed} OK ({inserted_count} docs) in {duration:.4f}s"
+                        )
+                    except BulkWriteError as bwe:
+                        duration = time.monotonic() - start_time
+                        inserted_count = bwe.details.get("nInserted", 0)
+                        if inserted_count > 0:
+                            all_batch_durations.append(duration)
+                        total_docs_inserted_segment += inserted_count
+                        total_insertion_time_segment += duration
+                        error_msg = f"BulkWriteError ({len(bwe.details.get('writeErrors',[]))} errors)"
+                        print(
+                            f"  ERROR: BW Err final batch {total_batches_processed}: {error_msg}",
+                            file=sys.stderr,
+                        )
+                    except Exception as e:
+                        duration = time.monotonic() - start_time
+                        total_insertion_time_segment += duration
+                        error_msg = f"Unexpected Python error: {e}"
+                        print(
+                            f"  ERROR: Unexpected Err final batch {total_batches_processed}: {error_msg}",
+                            file=sys.stderr,
+                        )
+                    benchmark_results.append(
+                        {
+                            "file": tsv_file.name,
+                            "batch_number": total_batches_processed,
+                            "docs_attempted_batch": rows_attempted_in_current_batch,
+                            "docs_parsed_batch": rows_parsed_in_current_batch,
+                            "docs_inserted_batch": inserted_count,
+                            "time_seconds": duration,
+                            "error": error_msg,
+                        }
+                    )
+
+    except FileNotFoundError:
+        print(f"Error: Input TSV file not found", file=sys.stderr)
+        file_processing_error = True
+    except ValueError as ve:
+        print(f"Error processing TSV: {ve}", file=sys.stderr)
+        file_processing_error = True
+    except Exception as e:
+        print(f"An unexpected error: {e}", file=sys.stderr)
+        file_processing_error = True
+
+    # --- Final Summary & Output (same as before) ---
+    print("\n--- MongoDB Insertion Summary ---")
+    print(f"Processed file: {tsv_file.name}")
+    if file_processing_error:
+        print("Processing may have stopped prematurely.")
+    print(f"Specified Offset: {offset}, Limit: {'No limit' if limit < 0 else limit}")
+    print(f"Total documents attempted in segment: {total_docs_attempted_segment}")
+    print(f"Total documents successfully parsed: {total_docs_parsed_segment}")
+    print(f"Total documents inserted successfully: {total_docs_inserted_segment}")
+    print(f"Total batches processed: {total_batches_processed}")
+    print(f"Total insertion time: {total_insertion_time_segment:.4f} seconds")
+    if total_insertion_time_segment > 0 and total_docs_inserted_segment > 0:
+        avg_docs_per_sec = total_docs_inserted_segment / total_insertion_time_segment
+        print(f"Average insertion rate for segment: {avg_docs_per_sec:.2f} docs/second")
+    else:
+        print("Average insertion rate: N/A")
+    if all_batch_durations:
+        print("\nBatch Performance Statistics (inserts in segment):")
+        print(f"  Total batches with inserts: {len(all_batch_durations)}")
+        try:
+            print(
+                f"  Average batch insert time: {statistics.mean(all_batch_durations):.6f}s"
+            )
+            print(
+                f"  Median batch insert time: {statistics.median(all_batch_durations):.6f}s"
+            )
+            print(f"  Min batch insert time: {min(all_batch_durations):.6f}s")
+            print(f"  Max batch insert time: {max(all_batch_durations):.6f}s")
+            if len(all_batch_durations) > 1:
+                print(f"  Std Dev: {statistics.stdev(all_batch_durations):.6f}s")
+        except statistics.StatisticsError as e:
+            print(f"Could not calculate stats: {e}")
+    else:
+        print("\nNo successful batch performance stats for this segment.")
+    try:
+        output_file_path = Path(output_file)
+        print(
+            f"\nWriting detailed benchmark results for this segment to: {output_file_path}"
+        )
+        with open(output_file_path, "w", newline="", encoding="utf-8") as outfile_csv:
             if benchmark_results:
-                # Use the keys from the first result dict as header, ensuring consistency
-                fieldnames = benchmark_results[0].keys()
-                writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+                fieldnames = [
+                    "file",
+                    "batch_number",
+                    "docs_attempted_batch",
+                    "docs_parsed_batch",
+                    "docs_inserted_batch",
+                    "time_seconds",
+                    "error",
+                ]
+                writer = csv.DictWriter(
+                    outfile_csv, fieldnames=fieldnames, extrasaction="ignore"
+                )
                 writer.writeheader()
                 writer.writerows(benchmark_results)
-                print(f"\nDetailed benchmark results written to: {output_file}")
             else:
-                outfile.write("No benchmark data recorded.\n")
-                print(
-                    f"\nBenchmark output file created, but no data was recorded: {output_file}"
-                )
-
+                outfile_csv.write("No benchmark data recorded.\n")
+                print(f"Benchmark file created, no data.")
     except IOError as e:
-        print(f"\nError writing benchmark results to '{output_file}': {e}")
+        print(f"\nError writing benchmark results: {e}", file=sys.stderr)
     except Exception as e:
-        print(f"\nAn unexpected error occurred writing benchmark results: {e}")
-
-    client.close()
-    print("MongoDB connection closed.")
-    print("Benchmarking complete.")
+        print(f"\nUnexpected error writing benchmark results: {e}", file=sys.stderr)
+    finally:
+        if "client" in locals() and client:
+            try:
+                client.close()
+                print("MongoDB connection closed.")
+            except Exception as e:
+                print(f"Error closing MongoDB connection: {e}", file=sys.stderr)
+    print("Benchmarking complete for this segment.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Insert TSV data into MongoDB Time Series and benchmark."
+        description="Insert segment of large TSV into MongoDB Time Series and benchmark."
     )
     parser.add_argument(
-        "--uri",
-        default="mongodb://localhost:27017/",
-        help="MongoDB connection URI (default: mongodb://localhost:27017/)",
+        "--uri", default="mongodb://localhost:27017/", help="MongoDB connection URI"
     )
     parser.add_argument("--db", required=True, help="Database name")
     parser.add_argument(
         "--collection", required=True, help="Time series collection name"
     )
-    parser.add_argument("--dir", required=True, help="Directory containing TSV files")
     parser.add_argument(
-        "--batchsize",
-        type=int,
-        default=1000,
-        help="Number of documents per insert batch (default: 1000)",
+        "--tsv_file",
+        required=True,
+        type=Path,
+        help="Path to the single large input TSV file.",
     )
-    # IMPORTANT: Provide the correct format string for your timestamps
     parser.add_argument(
-        "--tsformat",
-        default="%Y-%m-%dT%H:%M:%S.%fZ",  # Example: ISO 8601 UTC
-        help="Timestamp format string (strptime format, e.g., '%%Y-%%m-%%dT%%H:%%M:%%S.%%fZ' or '%%s.%%f' for Unix epoch)",
+        "--batch_size", type=int, default=5000, help="Docs per insert batch"
+    )
+    parser.add_argument("--offset", type=int, default=0, help="Data rows to skip")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=-1,
+        help="Max data rows to process after offset (-1 for no limit)",
     )
     parser.add_argument(
         "--output",
-        default="mongo_insert_benchmark.csv",
-        help="Output CSV file for benchmark results (default: mongo_insert_benchmark.csv)",
+        required=True,
+        help="Output CSV file for benchmark (MUST be unique for parallel runs)",
     )
-
     args = parser.parse_args()
 
-    # Validate timestamp format basic check (doesn't guarantee correctness for data)
-    if "%" not in args.tsformat:
-        print(
-            f"Warning: Timestamp format '{args.tsformat}' does not contain '%'. Ensure it's correct."
-        )
-        # Add specific checks if known non-% formats like 'epoch' are expected
+    if args.batch_size < 1:
+        print("Error: --batch_size must be > 0.", file=sys.stderr)
+        sys.exit(1)
+    if args.offset < 0:
+        print("Error: --offset must be >= 0.", file=sys.stderr)
+        sys.exit(1)
 
     insert_data_and_benchmark(
         mongo_uri=args.uri,
         db_name=args.db,
         collection_name=args.collection,
-        data_dir=args.dir,
-        batch_size=args.batchsize,
-        ts_format=args.tsformat,
+        tsv_file=args.tsv_file,
+        batch_size=args.batch_size,
+        offset=args.offset,
+        limit=args.limit,
         output_file=args.output,
     )
