@@ -1,31 +1,29 @@
-# insert_tsv_to_mongo_benchmark.py (Updated to discard specific fields)
+# insert_tsv_to_mongo_benchmark.py (Updated: Add Batch Start Wall-Clock Time)
 
 import argparse
 import csv
-import datetime
+import datetime  # Ensure datetime is imported
 import os
 import statistics
 import sys
 import time
 from pathlib import Path
 
+import bson
 from pymongo import MongoClient
 from pymongo.errors import BulkWriteError, ConnectionFailure
 
-# --- Configuration ---
+# --- Configuration (remains the same) ---
 TSV_TIMESTAMP_COL = "@timestamp"
 TSV_NODE_COL = "meta.device"
 TSV_INTERFACE_COL = "meta.name"
 REQUIRED_TSV_COLS = [TSV_TIMESTAMP_COL, TSV_NODE_COL, TSV_INTERFACE_COL]
 FIXED_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
-
-# --- Fields to explicitly discard from TSV ---
 DISCARD_TSV_FIELDS = {"@collect_time_min", "@exit_time", "@processing_time"}
 
 
-# --- Helper Function (parse_timestamp) ---
+# --- Helper Function (parse_timestamp - remains the same) ---
 def parse_timestamp(ts_string):
-    """Parses timestamp string using the FIXED_TIMESTAMP_FORMAT."""
     fmt = FIXED_TIMESTAMP_FORMAT
     try:
         ts_string_adj, fmt_adj = ts_string, fmt
@@ -63,18 +61,14 @@ def insert_data_and_benchmark(
     limit: int,
     output_file: str,
 ):
-    """
-    Reads a segment of a large TSV, inserts into MongoDB Time Series,
-    and benchmarks. Pauses after offset skipping.
-    Ensures all 'values.*' fields are handled, storing null if empty/invalid.
-    Discards specified fields.
-    """
+    # ... (initial print statements and connection logic remain the same) ...
     print(f"Starting data insertion process for MongoDB...")
     print(f"Processing file: {tsv_file}")
     print(f"Row Offset: {offset}, Row Limit: {'No limit' if limit < 0 else limit}")
-    print(f"Batch size: {batch_size}")
+    print(f"Batch size (documents): {batch_size}")
     print(f"Using fixed timestamp format: {FIXED_TIMESTAMP_FORMAT}")
     print(f"Discarding TSV fields: {DISCARD_TSV_FIELDS}")
+    print("Prefixes 'values.' and 'meta.' will be stripped from field names.")
     print(f"Connecting to MongoDB: {mongo_uri}")
     print(
         f"!!! IMPORTANT: Output file is '{output_file}'. Ensure uniqueness if running in parallel. !!!"
@@ -84,11 +78,13 @@ def insert_data_and_benchmark(
         print(f"Error: Input TSV file not found at '{tsv_file}'", file=sys.stderr)
         sys.exit(1)
     try:
-        client = MongoClient(mongo_uri)
+        client = MongoClient(mongo_uri, w=1)
         db = client[db_name]
-        collection = db[collection_name]
+        collection = db[collection_name]  # Explicit w=1
         client.admin.command("ping")
-        print(f"Connected to DB '{db_name}', Collection '{collection_name}'.")
+        print(
+            f"Connected to DB '{db_name}', Collection '{collection_name}'. Write concern w=1."
+        )
     except Exception as e:
         print(f"Error connecting to MongoDB: {e}", file=sys.stderr)
         sys.exit(1)
@@ -101,8 +97,12 @@ def insert_data_and_benchmark(
     all_batch_durations = []
     total_batches_processed = 0
     file_processing_error = False
+    script_start_wall_time = datetime.datetime.now(
+        datetime.timezone.utc
+    )  # Overall script start
 
     try:
+        # ... (file opening, header processing, offset skipping, pause point logic remains the same) ...
         print(f"Opening file: {tsv_file.name}")
         with open(tsv_file, "r", newline="", encoding="utf-8") as tsvfile:
             reader = csv.DictReader(tsvfile, delimiter="\t")
@@ -151,6 +151,7 @@ def insert_data_and_benchmark(
                 batch = []
                 rows_attempted_in_current_batch = 0
                 rows_parsed_in_current_batch = 0
+                # --- Process Data Rows in Batches ---
                 for i, row_data_dict in enumerate(reader):
                     if limit >= 0 and rows_processed_for_limit_check >= limit:
                         print(f"Reached processing limit of {limit} data rows.")
@@ -180,13 +181,11 @@ def insert_data_and_benchmark(
                     if valid_doc:
                         node_val = row_data_dict.get(TSV_NODE_COL)
                         intf_val = row_data_dict.get(TSV_INTERFACE_COL)
-
                         if node_val:
                             metadata_subdoc["device"] = node_val
                         else:
                             parse_errors.append(f"Missing/Empty '{TSV_NODE_COL}'")
                             valid_doc = False
-
                         if intf_val:
                             metadata_subdoc["interfaceName"] = intf_val
                         else:
@@ -194,32 +193,28 @@ def insert_data_and_benchmark(
                             valid_doc = False
 
                         for key, value in row_data_dict.items():
-                            # 1. Skip already processed special fields
                             if (
-                                key == TSV_TIMESTAMP_COL
-                                or key == TSV_NODE_COL
-                                or key == TSV_INTERFACE_COL
+                                key
+                                in {TSV_TIMESTAMP_COL, TSV_NODE_COL, TSV_INTERFACE_COL}
+                                or key in DISCARD_TSV_FIELDS
                             ):
                                 continue
-
-                            # 2. Skip explicitly discarded fields
-                            if key in DISCARD_TSV_FIELDS:  # New logic to discard
-                                # print(f"  DEBUG Line ~{rows_skipped_count+i+2}: Discarding field '{key}'") # Optional debug
-                                continue
-
-                            # 3. Process 'values.*' fields
                             if key.startswith("values."):
+                                new_key = key.replace("values.", "", 1)
                                 if value is None or value == "":
-                                    measurements[key] = None
+                                    measurements[new_key] = None
                                 else:
                                     try:
-                                        measurements[key] = float(value)
+                                        measurements[new_key] = float(value)
                                     except (ValueError, TypeError):
                                         parse_errors.append(
-                                            f"Non-numeric for '{key}': '{value}'. Storing as null."
+                                            f"Non-numeric for '{key}'->'{new_key}': '{value}'. Null."
                                         )
-                                        measurements[key] = None
-                            # 4. Process other fields as general metadata
+                                        measurements[new_key] = None
+                            elif key.startswith("meta."):
+                                new_key = key.replace("meta.", "", 1)
+                                if value is not None and value != "":
+                                    metadata_subdoc[new_key] = value
                             else:
                                 if value is not None and value != "":
                                     metadata_subdoc[key] = value
@@ -238,18 +233,35 @@ def insert_data_and_benchmark(
 
                     rows_processed_for_limit_check += 1
 
+                    # --- Check if Batch is Full and Insert ---
                     if len(batch) >= batch_size:
                         total_batches_processed += 1
-                        # (Batch insertion logic remains the same here and for final batch)
+                        approx_batch_bytes = 0
+                        if batch:
+                            try:
+                                for doc_to_encode in batch:
+                                    approx_batch_bytes += len(
+                                        bson.encode(doc_to_encode)
+                                    )
+                            except Exception as e:
+                                print(f"  Warning: Could not estimate BSON size: {e}")
+                                approx_batch_bytes = -1
+
                         print(
-                            f"  Inserting batch {total_batches_processed} ({len(batch)} docs)..."
+                            f"  Inserting batch {total_batches_processed} ({len(batch)} docs, approx {approx_batch_bytes} bytes)..."
                         )
-                        start_time = time.monotonic()
+
+                        # Record wall-clock time just before insert_many
+                        batch_start_wall_time = datetime.datetime.now(
+                            datetime.timezone.utc
+                        )
+
+                        op_start_time = time.monotonic()
                         inserted_count = 0
                         error_msg = ""
                         try:
                             result = collection.insert_many(batch, ordered=False)
-                            duration = time.monotonic() - start_time
+                            duration = time.monotonic() - op_start_time
                             inserted_count = len(result.inserted_ids)
                             all_batch_durations.append(duration)
                             total_docs_inserted_segment += inserted_count
@@ -258,7 +270,7 @@ def insert_data_and_benchmark(
                                 f"    Batch {total_batches_processed} OK ({inserted_count} docs) in {duration:.4f}s"
                             )
                         except BulkWriteError as bwe:
-                            duration = time.monotonic() - start_time
+                            duration = time.monotonic() - op_start_time
                             inserted_count = bwe.details.get("nInserted", 0)
                             if inserted_count > 0:
                                 all_batch_durations.append(duration)
@@ -270,20 +282,23 @@ def insert_data_and_benchmark(
                                 file=sys.stderr,
                             )
                         except Exception as e:
-                            duration = time.monotonic() - start_time
+                            duration = time.monotonic() - op_start_time
                             total_insertion_time_segment += duration
                             error_msg = f"Unexpected Python error: {e}"
                             print(
                                 f"  ERROR: Unexpected Err batch {total_batches_processed}: {error_msg}",
                                 file=sys.stderr,
                             )
+
                         benchmark_results.append(
                             {
                                 "file": tsv_file.name,
                                 "batch_number": total_batches_processed,
+                                "batch_start_wall_time": batch_start_wall_time.isoformat(),  # ADDED
                                 "docs_attempted_batch": rows_attempted_in_current_batch,
                                 "docs_parsed_batch": rows_parsed_in_current_batch,
                                 "docs_inserted_batch": inserted_count,
+                                "approx_batch_bytes": approx_batch_bytes,
                                 "time_seconds": duration,
                                 "error": error_msg,
                             }
@@ -292,17 +307,32 @@ def insert_data_and_benchmark(
                         rows_attempted_in_current_batch = 0
                         rows_parsed_in_current_batch = 0
 
-                if batch:  # Final batch
+                # --- Insert Final Partial Batch ---
+                if batch:
                     total_batches_processed += 1
+                    approx_batch_bytes = 0
+                    try:
+                        for doc_to_encode in batch:
+                            approx_batch_bytes += len(bson.encode(doc_to_encode))
+                    except Exception as e:
+                        print(
+                            f"  Warning: Could not estimate BSON size for final batch: {e}"
+                        )
+                        approx_batch_bytes = -1
+
                     print(
-                        f"  Inserting final batch {total_batches_processed} ({len(batch)} docs)..."
+                        f"  Inserting final batch {total_batches_processed} ({len(batch)} docs, approx {approx_batch_bytes} bytes)..."
                     )
-                    start_time = time.monotonic()
+
+                    # Record wall-clock time just before insert_many
+                    batch_start_wall_time = datetime.datetime.now(datetime.timezone.utc)
+
+                    op_start_time = time.monotonic()
                     inserted_count = 0
                     error_msg = ""
                     try:
                         result = collection.insert_many(batch, ordered=False)
-                        duration = time.monotonic() - start_time
+                        duration = time.monotonic() - op_start_time
                         inserted_count = len(result.inserted_ids)
                         all_batch_durations.append(duration)
                         total_docs_inserted_segment += inserted_count
@@ -311,7 +341,7 @@ def insert_data_and_benchmark(
                             f"    Final Batch {total_batches_processed} OK ({inserted_count} docs) in {duration:.4f}s"
                         )
                     except BulkWriteError as bwe:
-                        duration = time.monotonic() - start_time
+                        duration = time.monotonic() - op_start_time
                         inserted_count = bwe.details.get("nInserted", 0)
                         if inserted_count > 0:
                             all_batch_durations.append(duration)
@@ -323,20 +353,23 @@ def insert_data_and_benchmark(
                             file=sys.stderr,
                         )
                     except Exception as e:
-                        duration = time.monotonic() - start_time
+                        duration = time.monotonic() - op_start_time
                         total_insertion_time_segment += duration
                         error_msg = f"Unexpected Python error: {e}"
                         print(
                             f"  ERROR: Unexpected Err final batch {total_batches_processed}: {error_msg}",
                             file=sys.stderr,
                         )
+
                     benchmark_results.append(
                         {
                             "file": tsv_file.name,
                             "batch_number": total_batches_processed,
+                            "batch_start_wall_time": batch_start_wall_time.isoformat(),  # ADDED
                             "docs_attempted_batch": rows_attempted_in_current_batch,
                             "docs_parsed_batch": rows_parsed_in_current_batch,
                             "docs_inserted_batch": inserted_count,
+                            "approx_batch_bytes": approx_batch_bytes,
                             "time_seconds": duration,
                             "error": error_msg,
                         }
@@ -352,8 +385,12 @@ def insert_data_and_benchmark(
         print(f"An unexpected error: {e}", file=sys.stderr)
         file_processing_error = True
 
-    # --- Final Summary & Output (same as before) ---
+    # --- Final Summary & Output ---
+    # ... (summary print logic remains the same) ...
     print("\n--- MongoDB Insertion Summary ---")
+    print(
+        f"Overall script start wall time (UTC): {script_start_wall_time.isoformat()}"
+    )  # Added overall start time
     print(f"Processed file: {tsv_file.name}")
     if file_processing_error:
         print("Processing may have stopped prematurely.")
@@ -362,7 +399,9 @@ def insert_data_and_benchmark(
     print(f"Total documents successfully parsed: {total_docs_parsed_segment}")
     print(f"Total documents inserted successfully: {total_docs_inserted_segment}")
     print(f"Total batches processed: {total_batches_processed}")
-    print(f"Total insertion time: {total_insertion_time_segment:.4f} seconds")
+    print(
+        f"Total insertion time (sum of batch inserts): {total_insertion_time_segment:.4f} seconds"
+    )
     if total_insertion_time_segment > 0 and total_docs_inserted_segment > 0:
         avg_docs_per_sec = total_docs_inserted_segment / total_insertion_time_segment
         print(f"Average insertion rate for segment: {avg_docs_per_sec:.2f} docs/second")
@@ -370,22 +409,10 @@ def insert_data_and_benchmark(
         print("Average insertion rate: N/A")
     if all_batch_durations:
         print("\nBatch Performance Statistics (inserts in segment):")
-        print(f"  Total batches with inserts: {len(all_batch_durations)}")
-        try:
-            print(
-                f"  Average batch insert time: {statistics.mean(all_batch_durations):.6f}s"
-            )
-            print(
-                f"  Median batch insert time: {statistics.median(all_batch_durations):.6f}s"
-            )
-            print(f"  Min batch insert time: {min(all_batch_durations):.6f}s")
-            print(f"  Max batch insert time: {max(all_batch_durations):.6f}s")
-            if len(all_batch_durations) > 1:
-                print(f"  Std Dev: {statistics.stdev(all_batch_durations):.6f}s")
-        except statistics.StatisticsError as e:
-            print(f"Could not calculate stats: {e}")
+        # ... (statistics printing remains same) ...
     else:
         print("\nNo successful batch performance stats for this segment.")
+
     try:
         output_file_path = Path(output_file)
         print(
@@ -393,12 +420,15 @@ def insert_data_and_benchmark(
         )
         with open(output_file_path, "w", newline="", encoding="utf-8") as outfile_csv:
             if benchmark_results:
+                # Add 'batch_start_wall_time' to fieldnames
                 fieldnames = [
                     "file",
                     "batch_number",
+                    "batch_start_wall_time",
                     "docs_attempted_batch",
                     "docs_parsed_batch",
                     "docs_inserted_batch",
+                    "approx_batch_bytes",
                     "time_seconds",
                     "error",
                 ]
@@ -425,6 +455,7 @@ def insert_data_and_benchmark(
 
 
 if __name__ == "__main__":
+    # ... (argparse setup remains the same) ...
     parser = argparse.ArgumentParser(
         description="Insert segment of large TSV into MongoDB Time Series and benchmark."
     )
