@@ -85,8 +85,7 @@ def get_file():
     get_file.calls += 1
     return open(os.path.join(get_file.dirname, fname), "wb+")
 
-def timed_copy(mgr, batch, timing_bucket="values_insert", preserve_copy_files=False, suffix=''):
-    before = time.perf_counter()
+def tmpfile_factory(preserve_copy_files):
     tmpfile_factory = tempfile.TemporaryFile
     def tmpdir(dirname, suffix):
         if not hasattr(get_file, 'calls'):
@@ -96,7 +95,14 @@ def timed_copy(mgr, batch, timing_bucket="values_insert", preserve_copy_files=Fa
         return get_file
     if preserve_copy_files:
         tmpfile_factory = tmpdir(args.binary_output_dir, suffix)
-    mgr.copy(batch, tmpfile_factory)
+    return tmpfile_factory
+
+def timed_write_binary(mgr, batch, timing_bucket="values_write_binary", tmpfile_factory=tmpfile_factory(False), suffix=''):
+    before = time.perf_counter()
+    tmpfile = tmpfile_factory()
+    get_tmpfile():
+        return tmpfile
+    mgr.copy(batch, get_tmpfile)
     # timing details
     after = time.perf_counter()
     execution_time = after - before
@@ -106,7 +112,34 @@ def timed_copy(mgr, batch, timing_bucket="values_insert", preserve_copy_files=Fa
     if timing_buckets[timing_bucket]["max"] is None or execution_time > timing_buckets[timing_bucket]["max"]:
         timing_buckets[timing_bucket]["max"] = execution_time
     timing_buckets[timing_bucket]["count"] += 1
-    
+    return tmpfile
+
+def timed_copy_binary(f, filename, timing_bucket="values_insert"):
+    before = time.perf_counter()
+    if 'metadata' in filename:
+        with conn.cursor() as cur:
+            # create temp table
+            cur.execute("CREATE TEMP TABLE tmp_table (data jsonb) ON COMMIT DROP")
+            # do COPY
+            tmp_mgr = CopyManager(conn, 'tmp_table', ("data",))
+            tmp_mgr.copystream(f)
+            # insert from temp table into the metadata table
+            cur.execute("INSERT INTO %s SELECT * FROM tmp_table ON CONFLICT DO NOTHING" % args.metadata_table)
+        conn.commit()
+        logging.info('copied %s metadata rows (postgres insert time)' % args.batch_size)
+    else:
+        managers['values'].copystream(f)
+        logging.info('copied %s values rows (postgres insert time)' % args.batch_size)
+    after = time.perf_counter()
+    execution_time = after - before
+    timing_buckets[timing_bucket]["total"] += execution_time
+    if timing_buckets[timing_bucket]["min"] is None or execution_time < timing_buckets[timing_bucket]["min"]:
+        timing_buckets[timing_bucket]["min"] = execution_time
+    if timing_buckets[timing_bucket]["max"] is None or execution_time > timing_buckets[timing_bucket]["max"]:
+        timing_buckets[timing_bucket]["max"] = execution_time
+    timing_buckets[timing_bucket]["count"] += 1
+
+
 def insert_batch(batch, strategy="hashed-metadata"):
     if strategy == "hashed-metadata":
         # i[-1] because last column is 'metadata'
@@ -116,17 +149,20 @@ def insert_batch(batch, strategy="hashed-metadata"):
             cur.execute("CREATE TEMP TABLE tmp_table (data jsonb) ON COMMIT DROP")
             # do COPY
             mgr = CopyManager(conn, 'tmp_table', ("data",))
-            timed_copy(mgr, metadata_batch, timing_bucket="metadata_insert", preserve_copy_files=args.binary_output_intermediate, suffix='.metadata')
+            tmpfile = timed_write_binary(mgr, metadata_batch, timing_bucket="metadata_write_binary", tmpfile_factory=tmpfile_factory(preserve_copy_files=args.binary_output_intermediate), suffix='.metadata')
+            timed_copy_binary(tmpfile, tmpfile.filename, timing_bucket="metadata_insert")
             # insert from temp table into the metadata table
             cur.execute("INSERT INTO %s SELECT * FROM tmp_table ON CONFLICT DO NOTHING" % args.metadata_table)
         # end transaction
         logging.info('copied %s metadata rows (postgres insert time)' % len(batch))
         conn.commit()
         logging.info('committed %s metadata rows (postgres overhead)' % len(batch))
-        timed_copy(managers['values'], batch, timing_bucket="values_insert", preserve_copy_files=args.binary_output_intermediate)
+        tmpfile = timed_write_binary(managers['values'], batch, timing_bucket="values_write_binary", tmpfile_factory=tmpfile_factory(preserve_copy_files=args.binary_output_intermediate))
+        timed_copy_binary(tmpfile, tmpfile.filename, timing_bucket="values_insert")
         logging.info('copied %s values rows (postgres insert time)' % len(batch))
     if strategy == "inline-metadata":
-        timed_copy(managers['values'], batch, timing_bucket="values_insert", preserve_copy_files=args.binary_output_intermediate)
+        tmpfile = timed_write_binary(managers['values'], batch, timing_bucket="values_write_binary", tmpfile_factory=tmpfile_factory(preserve_copy_files=args.binary_output_intermediate))
+        timed_copy_binary(tmpfile, tmpfile.filename, timing_bucket="values_insert")
         logging.info('copied %s values rows (postgres insert time)' % len(batch))
 
 def timed_assembly(infile, header, batch_size=1, timing_bucket="values_assembly", offset=0):
@@ -209,32 +245,6 @@ def final_report():
     Average insertion rate: %.2fs rows/sec
     %s
     """ % (total_inserts, total_times, avg_insertion_rate, batch_stats))
-
-
-def copy_binary_batch(f, filename, timing_bucket="values_insert"):
-    before = time.perf_counter()
-    if 'metadata' in filename:
-        with conn.cursor() as cur:
-            # create temp table
-            cur.execute("CREATE TEMP TABLE tmp_table (data jsonb) ON COMMIT DROP")
-            # do COPY
-            tmp_mgr = CopyManager(conn, 'tmp_table', ("data",))
-            tmp_mgr.copystream(f)
-            # insert from temp table into the metadata table
-            cur.execute("INSERT INTO %s SELECT * FROM tmp_table ON CONFLICT DO NOTHING" % args.metadata_table)
-        conn.commit()
-        logging.info('copied %s metadata rows (postgres insert time)' % args.batch_size)
-    else:
-        managers['values'].copystream(f)
-        logging.info('copied %s values rows (postgres insert time)' % args.batch_size)
-    after = time.perf_counter()
-    execution_time = after - before
-    timing_buckets[timing_bucket]["total"] += execution_time
-    if timing_buckets[timing_bucket]["min"] is None or execution_time < timing_buckets[timing_bucket]["min"]:
-        timing_buckets[timing_bucket]["min"] = execution_time
-    if timing_buckets[timing_bucket]["max"] is None or execution_time > timing_buckets[timing_bucket]["max"]:
-        timing_buckets[timing_bucket]["max"] = execution_time
-    timing_buckets[timing_bucket]["count"] += 1
 
 
         
