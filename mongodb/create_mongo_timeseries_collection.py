@@ -82,6 +82,35 @@ def create_timeseries_collection(mongo_uri, db_name, collection_name):
 
     collection = db[collection_name]
 
+    # --- Attempt to Drop the Unexpected Index ---
+    unexpected_index_name = "metadata_1_timestamp_1"
+    print(
+        f"Attempting to drop unexpected index '{unexpected_index_name}' if it exists..."
+    )
+    try:
+        collection.drop_index(unexpected_index_name)
+        print(f"Successfully dropped index '{unexpected_index_name}'.")
+    except OperationFailure as e:
+        # Error code for "index not found" is 27 for some versions/contexts
+        # Check by code_name or common error message components
+        if (
+            e.code == 27
+            or e.code_name == "IndexNotFound"
+            or "index not found" in str(e.details).lower()
+        ):
+            print(f"Index '{unexpected_index_name}' was not found (which is good).")
+        else:
+            # Some other error occurred trying to drop it
+            print(
+                f"Warning: Operation Failure while trying to drop index '{unexpected_index_name}': {e.details}",
+                file=sys.stderr,
+            )
+    except Exception as e:
+        print(
+            f"Warning: An unexpected error occurred while trying to drop index '{unexpected_index_name}': {e}",
+            file=sys.stderr,
+        )
+
     # --- 1. Specific Compound Index for Primary Identifiers ---
     index_name_primary = "metadata_device_interface_idx"
     index_keys_primary = [("metadata.device", 1), ("metadata.interfaceName", 1)]
