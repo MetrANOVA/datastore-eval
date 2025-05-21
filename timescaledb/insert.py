@@ -30,6 +30,7 @@ parser.add_argument('--infile', help="Read rows from infile. Default: sys.stdin"
 parser.add_argument('--wide', help="Use stardust 'wide' format, including all columns.", action='store_true')
 parser.add_argument('--batch-size', help="Batch size to do inserts, in rows.", type=int, default=5000)
 parser.add_argument('--limit', help="total insertion limit", type=int, default=20000)
+parser.add_argument('--skip', help="Only insert every Nth row", type=int, default=1)
 parser.add_argument('--offset', help="offset to begin inserts from from input file", type=int, default=0)
 parser.add_argument('--binary-output-dir', help="directory name to output binary COPY statements to", default="/tmp/%s" % ''.join(random.choices(string.ascii_letters + string.digits, k=8)))
 parser.add_argument('--binary-output-intermediate', help="save binary intermediate output. See also: --binary-output-dir. default: False", action='store_true')
@@ -37,7 +38,7 @@ parser.add_argument('--binary-input-dir', help="read COPY batches fron binary in
 
 args = parser.parse_args()
 
-conn = psycopg2.connect(database=args.db, user=args.db_user)
+conn = psycopg2.connect(database=args.db, user=args.db_user) #, host='localhost', port=5432)
 
 col_source = NARROW_FORMAT
 if args.wide:
@@ -66,6 +67,18 @@ timing_buckets = {
         "min": None,
         "max": None,
     },
+    "values_write_binary": {
+        "total": 0.0,
+        "count": 0,
+        "min": None,
+        "max": None,
+    },
+    "metadata_write_binary": {
+        "total": 0.0,
+        "count": 0,
+        "min": None,
+        "max": None,
+    },
     "values_assembly": {
         "total": 0.0,
         "count": 0,
@@ -85,8 +98,8 @@ def get_file():
     get_file.calls += 1
     return open(os.path.join(get_file.dirname, fname), "wb+")
 
-def tmpfile_factory(preserve_copy_files):
-    tmpfile_factory = tempfile.TemporaryFile
+def tmpfile_factory(preserve_copy_files, suffix="values"):
+    tmpfile_factory = lambda: tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     def tmpdir(dirname, suffix):
         if not hasattr(get_file, 'calls'):
             get_file.calls = 0
@@ -97,10 +110,10 @@ def tmpfile_factory(preserve_copy_files):
         tmpfile_factory = tmpdir(args.binary_output_dir, suffix)
     return tmpfile_factory
 
-def timed_write_binary(mgr, batch, timing_bucket="values_write_binary", tmpfile_factory=tmpfile_factory(False), suffix=''):
+def timed_write_binary(mgr, batch, timing_bucket="values_write_binary", factory=tmpfile_factory(False)):
     before = time.perf_counter()
-    tmpfile = tmpfile_factory()
-    get_tmpfile():
+    tmpfile = factory()
+    def get_tmpfile():
         return tmpfile
     mgr.copy(batch, get_tmpfile)
     # timing details
@@ -112,24 +125,13 @@ def timed_write_binary(mgr, batch, timing_bucket="values_write_binary", tmpfile_
     if timing_buckets[timing_bucket]["max"] is None or execution_time > timing_buckets[timing_bucket]["max"]:
         timing_buckets[timing_bucket]["max"] = execution_time
     timing_buckets[timing_bucket]["count"] += 1
+    tmpfile = open(tmpfile.name, 'rb')
     return tmpfile
 
-def timed_copy_binary(f, filename, timing_bucket="values_insert"):
+def timed_copy_binary(mgr, f, filename, timing_bucket="values_insert"):
     before = time.perf_counter()
-    if 'metadata' in filename:
-        with conn.cursor() as cur:
-            # create temp table
-            cur.execute("CREATE TEMP TABLE tmp_table (data jsonb) ON COMMIT DROP")
-            # do COPY
-            tmp_mgr = CopyManager(conn, 'tmp_table', ("data",))
-            tmp_mgr.copystream(f)
-            # insert from temp table into the metadata table
-            cur.execute("INSERT INTO %s SELECT * FROM tmp_table ON CONFLICT DO NOTHING" % args.metadata_table)
-        conn.commit()
-        logging.info('copied %s metadata rows (postgres insert time)' % args.batch_size)
-    else:
-        managers['values'].copystream(f)
-        logging.info('copied %s values rows (postgres insert time)' % args.batch_size)
+    mgr.copystream(f)
+    logging.info('COPY %s rows (postgres insert time)' % args.batch_size)
     after = time.perf_counter()
     execution_time = after - before
     timing_buckets[timing_bucket]["total"] += execution_time
@@ -149,32 +151,51 @@ def insert_batch(batch, strategy="hashed-metadata"):
             cur.execute("CREATE TEMP TABLE tmp_table (data jsonb) ON COMMIT DROP")
             # do COPY
             mgr = CopyManager(conn, 'tmp_table', ("data",))
-            tmpfile = timed_write_binary(mgr, metadata_batch, timing_bucket="metadata_write_binary", tmpfile_factory=tmpfile_factory(preserve_copy_files=args.binary_output_intermediate), suffix='.metadata')
-            timed_copy_binary(tmpfile, tmpfile.filename, timing_bucket="metadata_insert")
+            tmpfile = timed_write_binary(mgr, metadata_batch, timing_bucket="metadata_write_binary", factory=tmpfile_factory(preserve_copy_files=args.binary_output_intermediate, suffix='.metadata'))
+            logging.info('Wrote binary output %s metadata rows (intermediate filesystem write time)' % len(batch))
+            timed_copy_binary(mgr, tmpfile, tmpfile.name, timing_bucket="metadata_insert")
             # insert from temp table into the metadata table
             cur.execute("INSERT INTO %s SELECT * FROM tmp_table ON CONFLICT DO NOTHING" % args.metadata_table)
         # end transaction
-        logging.info('copied %s metadata rows (postgres insert time)' % len(batch))
         conn.commit()
-        logging.info('committed %s metadata rows (postgres overhead)' % len(batch))
-        tmpfile = timed_write_binary(managers['values'], batch, timing_bucket="values_write_binary", tmpfile_factory=tmpfile_factory(preserve_copy_files=args.binary_output_intermediate))
-        timed_copy_binary(tmpfile, tmpfile.filename, timing_bucket="values_insert")
-        logging.info('copied %s values rows (postgres insert time)' % len(batch))
+        logging.info('Completed commit for %s metadata rows (postgres overhead)' % len(batch))
+        tmpfile = timed_write_binary(managers['values'], batch, timing_bucket="values_write_binary", factory=tmpfile_factory(preserve_copy_files=args.binary_output_intermediate, suffix='.values'))
+        logging.info('Wrote binary output for %s values rows (intermediate filesystem write time)' % len(batch))
+        timed_copy_binary(managers['values'], tmpfile, tmpfile.name, timing_bucket="values_insert")
     if strategy == "inline-metadata":
-        tmpfile = timed_write_binary(managers['values'], batch, timing_bucket="values_write_binary", tmpfile_factory=tmpfile_factory(preserve_copy_files=args.binary_output_intermediate))
-        timed_copy_binary(tmpfile, tmpfile.filename, timing_bucket="values_insert")
-        logging.info('copied %s values rows (postgres insert time)' % len(batch))
+        tmpfile = timed_write_binary(managers['values'], batch, timing_bucket="values_write_binary", factory=tmpfile_factory(preserve_copy_files=args.binary_output_intermediate, suffix='.values'))
+        logging.info('Wrote binary output for %s values rows (intermediate filesystem write time)' % len(batch))
+        timed_copy_binary(managers['values'], tmpfile, tmpfile.name, timing_bucket="values_insert")
+
+def copy_batch(tmpfile, tmpfile_name):
+    if "metadata" in tmpfile_name:
+        with conn.cursor() as cur:
+            # create temp table
+            cur.execute("CREATE TEMP TABLE tmp_table (data jsonb) ON COMMIT DROP")
+            # do COPY
+            mgr = CopyManager(conn, 'tmp_table', ("data",))
+            timed_copy_binary(mgr, tmpfile, tmpfile_name, timing_bucket="metadata_insert")
+            # insert from temp table into the metadata table
+            cur.execute("INSERT INTO %s SELECT * FROM tmp_table ON CONFLICT DO NOTHING" % args.metadata_table)
+        # end transaction
+        conn.commit()
+        logging.info('Completed commit for %s metadata rows (postgres overhead)' % args.batch_size)
+    else:
+        timed_copy_binary(managers['values'], tmpfile, tmpfile_name, timing_bucket="values_insert")
 
 def timed_assembly(infile, header, batch_size=1, timing_bucket="values_assembly", offset=0):
     batch = []
     before = time.perf_counter()
     curr_line = 0
     for line in infile:
-        curr_line += 1
-        if curr_line < offset:
+        if curr_line < offset or ((curr_line - offset) % args.skip) != 0:
             if curr_line % 1000 == 0:
                 logging.info("seeking to offset... %s", curr_line)
+            elif curr_line < 1000 and ((curr_line - offset) % args.skip) != 0:
+                logging.info("skipping line %s. Offset: %s Skip: %s Curr_line - offset: %s Curr_line - offset mod skip: %s" % (curr_line, offset, args.skip, (curr_line - offset), ((curr_line - offset) % args.skip) ))
+            curr_line += 1
             continue
+        curr_line += 1
         row = line.rstrip("\n").split("\t")
 
         batch.append(assemble(row, header, fmt=WIDE_FORMAT if args.wide else NARROW_FORMAT, original_line=line))
@@ -242,7 +263,7 @@ def final_report():
     --- Insertion Summary ---
     Total rows processed: %s
     %s
-    Average insertion rate: %.2fs rows/sec
+    Average insertion rate: %.0f rows/sec
     %s
     """ % (total_inserts, total_times, avg_insertion_rate, batch_stats))
 
@@ -253,7 +274,7 @@ total_inserts = 0
 if args.binary_input_dir:
     for filename in sorted(os.listdir(args.binary_input_dir)):
         with open(os.path.join(args.binary_input_dir, filename), 'rb') as f:
-            copy_binary_batch(f, filename, timing_bucket='values_insert' if 'metadata' in filename else 'metadata_insert')
+            copy_batch(f, filename)
             if 'metadata' not in filename:
                 total_inserts += args.batch_size
 else:
