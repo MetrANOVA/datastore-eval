@@ -48,10 +48,10 @@ ALTER TABLE metadata ADD CONSTRAINT unique_hash UNIQUE (hash);
 -- create a reverse hash index (like search index) for specific keys in 'data' column
 -- gin indices get used when a table scan "outweighs" an index scan in query planner
 -- this condition is not hit until there are a fair number of rows in the table (1m+)
-CREATE INDEX ON metadata USING gin(data);
+--CREATE INDEX ON metadata USING gin(data);
 
 -- create a reverse hash index (like a search index) for specific values in 'data' column
-CREATE INDEX ON metadata USING gin(data jsonb_path_ops);
+--CREATE INDEX ON metadata USING gin(data jsonb_path_ops);
 
 -- we'll also want a normal btree primary key index on the hash...
 ALTER TABLE metadata ADD PRIMARY KEY (hash);
@@ -145,10 +145,10 @@ SELECT create_hypertable('values_inline', by_range('_timestamp'));
 -- create a reverse hash index (like search index) for specific keys in 'data' column
 -- gin indices get used when a table scan "outweighs" an index scan in query planner
 -- this condition is not hit until there are a fair number of rows in the table (1m+)
-CREATE INDEX ON values_inline USING gin(metadata);
+-- CREATE INDEX ON values_inline USING gin(metadata);
 
 -- create a reverse hash index (like a search index) for specific values in 'data' column
-CREATE INDEX ON values_inline USING gin(metadata jsonb_path_ops);
+-- CREATE INDEX ON values_inline USING gin(metadata jsonb_path_ops);
 
 
 
