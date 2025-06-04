@@ -35,10 +35,11 @@ parser.add_argument('--offset', help="offset to begin inserts from from input fi
 parser.add_argument('--binary-output-dir', help="directory name to output binary COPY statements to", default="/tmp/%s" % ''.join(random.choices(string.ascii_letters + string.digits, k=8)))
 parser.add_argument('--binary-output-intermediate', help="save binary intermediate output. See also: --binary-output-dir. default: False", action='store_true')
 parser.add_argument('--binary-input-dir', help="read COPY batches fron binary intermediate input. See also: --binary-output-intermediate.")
+parser.add_argument('--host', help="remote postgres host")
 
 args = parser.parse_args()
 
-conn = psycopg2.connect(database=args.db, user=args.db_user) #, host='localhost', port=5432)
+conn = psycopg2.connect(database=args.db, user=args.db_user, host=args.host, port=5432)
 
 col_source = NARROW_FORMAT
 if args.wide:
