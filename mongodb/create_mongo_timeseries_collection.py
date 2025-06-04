@@ -141,32 +141,32 @@ def create_timeseries_collection(mongo_uri, db_name, collection_name):
 
     # --- 2. Wildcard Index for All Other Metadata Fields ---
     # Corrected syntax:
-    index_name_wildcard = "metadata_all_subfields_wildcard_idx"  # More descriptive name
-    index_keys_wildcard = {
-        "metadata.$**": 1
-    }  # Apply wildcard to all paths under 'metadata'
-    try:
-        collection.create_index(index_keys_wildcard, name=index_name_wildcard)
-        print(
-            f"Successfully created wildcard index '{index_name_wildcard}' on all 'metadata' sub-fields."
-        )
-    except OperationFailure as e:
-        if (
-            e.code in [85, 86]
-            or "Index already exists" in str(e.details).lower()
-            or "index with matching name" in str(e.details).lower()
-        ):
-            print(f"Wildcard index '{index_name_wildcard}' likely already exists.")
-        else:
-            print(
-                f"Operation Failure during wildcard index creation for key {index_keys_wildcard}: {e.details}",
-                file=sys.stderr,
-            )
-    except Exception as e:
-        print(
-            f"An unexpected error occurred during wildcard index creation for key {index_keys_wildcard}: {e}",
-            file=sys.stderr,
-        )
+    # index_name_wildcard = "metadata_all_subfields_wildcard_idx"  # More descriptive name
+    # index_keys_wildcard = {
+    #     "metadata.$**": 1
+    # }  # Apply wildcard to all paths under 'metadata'
+    # try:
+    #     collection.create_index(index_keys_wildcard, name=index_name_wildcard)
+    #     print(
+    #         f"Successfully created wildcard index '{index_name_wildcard}' on all 'metadata' sub-fields."
+    #     )
+    # except OperationFailure as e:
+    #     if (
+    #         e.code in [85, 86]
+    #         or "Index already exists" in str(e.details).lower()
+    #         or "index with matching name" in str(e.details).lower()
+    #     ):
+    #         print(f"Wildcard index '{index_name_wildcard}' likely already exists.")
+    #     else:
+    #         print(
+    #             f"Operation Failure during wildcard index creation for key {index_keys_wildcard}: {e.details}",
+    #             file=sys.stderr,
+    #         )
+    # except Exception as e:
+    #     print(
+    #         f"An unexpected error occurred during wildcard index creation for key {index_keys_wildcard}: {e}",
+    #         file=sys.stderr,
+    #     )
 
     print("Setup complete.")
     client.close()

@@ -1,6 +1,6 @@
 from pymongo import MongoClient
 
-MONGO_URI = "mongodb://localhost:27017/"
+MONGO_URI = "mongodb://10.128.0.6:27017/"
 DB_NAME = "datastoreEval"
 
 try:
