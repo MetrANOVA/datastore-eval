@@ -1,3 +1,12 @@
+CREATE TABLE scoreboard
+(
+   table_name text,
+   batch_size float,
+   start_time timestamptz,
+   end_time timestamptz
+);
+SELECT create_hypertable('scoreboard', by_range('start_time'));
+
 -- create the table containing measurement values
 CREATE TABLE values 
 (
