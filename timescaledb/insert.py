@@ -23,6 +23,7 @@ parser.add_argument('--db', help='postgres database. Connections assumed to be o
 parser.add_argument('--db-user', help='postgres user. This user is assumed to be a superuser and to be authenticated via "trust" (via unix domain socket)', default='timescale')
 parser.add_argument('--values-table', help="Table to insert values into. Receives both values and metadata (in 'metadata' column) when strategy is 'inline-metadata'", default='values')
 parser.add_argument('--metadata-table', help="Table to insert metadata into. Only used when strategy is 'hashed-metadata'", default='metadata')
+parser.add_argument('--scoreboard-table', help="Table to insert metrics/scoreboard info.", default='scoreboard')
 parser.add_argument('--strategy', help='metadata insertion strategy. Options are "hashed-metadata" or "inline-metadata".'
                     ' When "hashed-metadata", metadata will be inserted into the "metadata-table" and referenced via hash.'
                     ' When "inline-metadata", metadata objects will be inserted into the same row as values.', default="hashed-metadata")
@@ -131,9 +132,11 @@ def timed_write_binary(mgr, batch, timing_bucket="values_write_binary", factory=
 
 def timed_copy_binary(mgr, f, filename, timing_bucket="values_insert"):
     before = time.perf_counter()
+    before_timestamp = datetime.now()
     mgr.copystream(f)
     logging.info('COPY %s rows (postgres insert time)' % args.batch_size)
     after = time.perf_counter()
+    after_timestamp = datetime.now()
     execution_time = after - before
     timing_buckets[timing_bucket]["total"] += execution_time
     if timing_buckets[timing_bucket]["min"] is None or execution_time < timing_buckets[timing_bucket]["min"]:
@@ -141,6 +144,11 @@ def timed_copy_binary(mgr, f, filename, timing_bucket="values_insert"):
     if timing_buckets[timing_bucket]["max"] is None or execution_time > timing_buckets[timing_bucket]["max"]:
         timing_buckets[timing_bucket]["max"] = execution_time
     timing_buckets[timing_bucket]["count"] += 1
+    with conn.cursor() as cur:
+        cur.execute('''INSERT INTO %s (table_name, batch_size, start_time, end_time) VALUES ('%s', %s, '%s', '%s')''' % (
+            args.scoreboard_table, args.values_table, args.batch_size, before_timestamp.isoformat(), after_timestamp.isoformat()
+        ))
+    conn.commit()
 
 
 def insert_batch(batch, strategy="hashed-metadata"):
