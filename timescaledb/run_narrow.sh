@@ -1,7 +1,6 @@
 WORKERS=$1
 HOST=$2
 BINARY_OUTPUT_DIR=$3
-INSERT_TIMING=$4
 
 WORKERS_MINUS_ONE=$(($WORKERS-1))
 
@@ -27,7 +26,12 @@ sleep 0.1
 done;
 
 # sleep for a long time while we do the prep work for the batches and inserts
-sleep $INSERT_TIMING
+wait $(jobs -p)
+
+cat drop_tables.sql | psql --host $HOST --user timescale
+cat create_tables.sql | psql --host $HOST --user timescale
+# cat it again, there's some kind of small bug, not worth fixing
+cat create_tables.sql | psql --host $HOST --user timescale
 
 for i in `seq 0 1 $WORKERS_MINUS_ONE`;
 do echo $i;
@@ -35,4 +39,6 @@ python insert.py --values-table values_inline --strategy inline-metadata --host 
 sleep 0.1
 done;
 
+wait $(jobs -p)
 
+bash get_results.sh $HOST 30
