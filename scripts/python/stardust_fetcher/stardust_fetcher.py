@@ -6,6 +6,7 @@ from elasticsearch import Elasticsearch
 from elasticsearch.helpers import scan
 import sys
 from formats import WIDE_FORMAT, NARROW_FORMAT
+import logging
 
 parser = argparse.ArgumentParser(description='Fetches public data from ESnet Stardust, formatting the output as csv, tsv, or json.')
 
@@ -19,10 +20,14 @@ parser.add_argument('--end', help='End date for fetch, in ISO8601 format. Defaul
 parser.add_argument('--format', help='Record dump format. Note that the "json" formatter dumps one json object per line, rather than an array of objects, to preserve streaming', default='tsv', choices=['tsv', 'json', 'csv'])
 parser.add_argument('--stardust-url', default="https://el.gc1.prod.stardust.es.net:9200")
 parser.add_argument('--index', default='sd_public_interfaces')
-parser.add_argument('--outfile', default=sys.stdout, type=argparse.FileType('w'))
+parser.add_argument('--outfile', default=sys.stdout, type=argparse.FileType('a'))
 parser.add_argument('--wide', action='store_true')
+parser.add_argument('--initial-count', default=0, type=int)
 
 args = parser.parse_args()
+
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger()
 
 class DataDumper:
     def __init__(self, url, verify_certs=False, request_timeout=60):
@@ -47,7 +52,7 @@ class DataDumper:
             },
             "sort": [{
                 "@timestamp": {
-                    "order": "desc"
+                    "order": "asc"
                 }
             }]
         }
@@ -80,21 +85,24 @@ class DataDumper:
                 yield from self.enumerate_keys(d[k], parent_key=key)
 
     
-    def dump(self, index=args.index, start=args.start, end=args.end, outfile=args.outfile, fmt=args.format):
+    def dump(self, index=args.index, start=args.start, end=args.end, outfile=None, fmt=args.format, initial_count=0):
         if fmt in ["tsv", "csv"]:
             kwargs = {}
             if fmt == 'tsv':
                 kwargs = { "delimiter":'\t', "lineterminator":'\n'}
             writer = csv.DictWriter(outfile, self.get_fieldnames(wide=args.wide), **kwargs)
             writer.writeheader()
+            i = initial_count
             for record in self.query(index=index, start=start, end=end):
                 r = self.format_record(record, wide=args.wide)
                 writer.writerow(r)
+                i += 1
+                if (i % 10000 == 0):
+                    logger.warning("Dumped 10,000 rows. Total: %s rows. last record timestamp: %s" % (i , record['@timestamp']))
         if fmt == "json":
             for record in self.query(index=index, start=start, end=end):
                 r = self.format_record(record)
                 json.dump(r, outfile)
                 outfile.write("\n")
 
-
-DataDumper(url=args.stardust_url).dump(index=args.index, start=args.start, end=args.end, fmt=args.format)
+DataDumper(url=args.stardust_url).dump(index=args.index, start=args.start, end=args.end, outfile=args.outfile, fmt=args.format, initial_count=args.initial_count)
