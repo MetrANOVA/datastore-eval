@@ -14,6 +14,7 @@ import tempfile
 import os
 import random
 import string
+import hashlib
 
 logging.basicConfig(format='%(asctime)s :: %(message)s', level=logging.INFO)
 
@@ -37,6 +38,9 @@ parser.add_argument('--binary-output-dir', help="directory name to output binary
 parser.add_argument('--binary-output-intermediate', help="save binary intermediate output. See also: --binary-output-dir. default: False", action='store_true')
 parser.add_argument('--binary-input-dir', help="read COPY batches fron binary intermediate input. See also: --binary-output-intermediate.")
 parser.add_argument('--host', help="remote postgres host")
+parser.add_argument('--total-partitions', help="use consistent hash partitioning to partition binary output results", type=int, default=0)
+parser.add_argument('--partition', help="the binary output partition to prepare", type=int)
+
 
 args = parser.parse_args()
 
@@ -192,6 +196,15 @@ def copy_batch(tmpfile, tmpfile_name):
     else:
         timed_copy_binary(managers['values'], tmpfile, tmpfile_name, timing_bucket="values_insert")
 
+def hash_row(row):
+    ROUTER_IDX = 19
+    PORT_IDX = 34
+    if args.wide:
+        ROUTER_IDX = 605
+        PORT_IDX = 610
+    port_string = "%s::%s" % (row[ROUTER_IDX], row[PORT_IDX])
+    return hashlib.md5(port_string.encode('UTF-8')).hexdigest()
+        
 def timed_assembly(infile, header, batch_size=1, timing_bucket="values_assembly", offset=0):
     batch = []
     before = time.perf_counter()
@@ -206,6 +219,13 @@ def timed_assembly(infile, header, batch_size=1, timing_bucket="values_assembly"
             continue
         curr_line += 1
         row = line.rstrip("\n").split("\t")
+        if args.total_partitions:
+            hash_output = hash_row(row)
+            hash_bucket = int(hash_output, 16) % args.total_partitions
+            if hash_bucket != args.partition:
+                continue
+            if curr_line % 1000 == 0:
+                logging.info("row %s: partition %s" % (curr_line, hash_bucket))
 
         batch.append(assemble(row, header, fmt=WIDE_FORMAT if args.wide else NARROW_FORMAT, original_line=line))
         if len(batch) == args.batch_size:
