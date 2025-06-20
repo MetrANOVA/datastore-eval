@@ -7,6 +7,8 @@ WORKERS_MINUS_ONE=$(($WORKERS-1))
 LIMIT=100000000
 PER_WORKER_LIMIT=$(($LIMIT / $WORKERS))
 
+source venv/bin/activate
+
 cat drop_tables.sql | psql --host $HOST --user timescale
 cat create_tables.sql | psql --host $HOST --user timescale
 # cat it again, there's some kind of small bug, not worth fixing

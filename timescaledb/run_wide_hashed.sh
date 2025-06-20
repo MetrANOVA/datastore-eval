@@ -23,7 +23,7 @@ source venv/bin/activate
 
 #for i in `seq 0 1 $WORKERS_MINUS_ONE`;
 #do echo $i;
-#python insert.py --values-table values_wide_inline --strategy inline-metadata --host $HOST --infile /media/stardust-data/stardust_data-2025-03-11--2025-03-13.wide.reversed.tsv --wide --offset $i --skip $WORKERS --limit $PER_WORKER_LIMIT --batch-size 5000 --binary-output-dir "$BINARY_OUTPUT_DIR/$i" --binary-output-intermediate &
+#python insert.py --values-table values_wide_inline --strategy inline-metadata --host $HOST --infile /media/stardust-data/stardust_data-2025-03-11--2025-03-13.wide.reversed.tsv --wide --total-partitions=$WORKERS --partition=$i --limit $PER_WORKER_LIMIT --batch-size 5000 --binary-output-dir "$BINARY_OUTPUT_DIR/$i" --#binary-output-intermediate &
 #sleep 0.1
 #done;
 
@@ -37,7 +37,7 @@ cat create_tables.sql | psql --host $HOST --user timescale
 
 for i in `seq 0 1 $WORKERS_MINUS_ONE`;
 do echo $i;
-python insert.py --values-table values_wide_inline --strategy inline-metadata --host $HOST --infile /media/stardust-data/stardust_data-2025-03-11--2025-03-13.wide.reversed.tsv --wide --offset $i --skip $WORKERS --limit $PER_WORKER_LIMIT --batch-size 5000 --binary-input-dir "$BINARY_OUTPUT_DIR/$i" &
+python insert.py --values-table values_wide_inline --strategy inline-metadata --host $HOST --infile /media/stardust-data/stardust_data-2025-03-11--2025-03-13.wide.reversed.tsv --wide --total-partitions=$WORKERS --partition=$i --limit $PER_WORKER_LIMIT --batch-size 5000 --binary-input-dir "$BINARY_OUTPUT_DIR/$i" &
 sleep 0.1
 done;
 
