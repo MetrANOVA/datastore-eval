@@ -12,14 +12,16 @@ import random
 import string
 import hashlib
 import pickle
+import sys
+from elasticsearch import Elasticsearch
 
 parser = argparse.ArgumentParser(description='Inserts ESnet Stardust Data into timescaledb, producing a timing summary report.')
 
 # connection
 parser.add_argument('--user', help='Elasticsearch username', default='timescale')
 parser.add_argument('--password', help='Elasticsearch User Password', default='timescale')
-parser.add_argument('--host', help="remote elastic host")
-parser.add_argument('--port', help="remote elastic port")
+parser.add_argument('--host', help="remote elastic host", default='localhost')
+parser.add_argument('--port', help="remote elastic port", default='9200')
 
 # indexes to use
 parser.add_argument('--values-index', help="Table to insert values into. Receives both values and metadata (in 'metadata' column) when strategy is 'inline-metadata'", default='values')
@@ -44,7 +46,7 @@ parser.add_argument('--transform-input-dir', help="read COPY batches fron binary
 
 args = parser.parse_args()
 
-es_client = Elasticsearch(host=args.host, port=args.port, basic_auth=('user', 'pass'))
+es_client = Elasticsearch(hosts=["http://%s:%s" % (args.host, args.port)], basic_auth=(args.user, args.password))
 
 col_source = NARROW_FORMAT
 if args.wide:
@@ -168,12 +170,12 @@ def timed_bulk_insert(f, timing_bucket="insert"):
     if timing_buckets[timing_bucket]["max"] is None or execution_time > timing_buckets[timing_bucket]["max"]:
         timing_buckets[timing_bucket]["max"] = execution_time
     timing_buckets[timing_bucket]["count"] += 1
-    es_client.index(index=args.scoreboard_index, {
+    es_client.index(document={
         "index_name": args.values_index, 
         "batch_size": args.batch_size,
         "start_time": before_timestamp.isoformat(),
         "end_time": after_timestamp.isoformat()
-    })
+    }, index=args.scoreboard_index)
 
 def hash_row(row):
     ROUTER_IDX = 19
@@ -194,4 +196,4 @@ if args.transform_input_dir:
 else:
     header_line = args.infile.readline()
     header = header_line.strip().split("\t")
-    in timed_assembly(infile=args.infile, header=header, batch_size=args.batch_size, timing_bucket="values_assembly", offset=args.offset)
+    timed_assembly(infile=args.infile, header=header, batch_size=args.batch_size, timing_bucket="values_assembly", offset=args.offset)
