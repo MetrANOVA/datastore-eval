@@ -14,8 +14,11 @@ import hashlib
 import pickle
 import sys
 from elasticsearch import Elasticsearch
+import time
 
-parser = argparse.ArgumentParser(description='Inserts ESnet Stardust Data into timescaledb, producing a timing summary report.')
+logging.basicConfig(format='%(asctime)s :: %(message)s', level=logging.INFO)
+
+parser = argparse.ArgumentParser(description='Inserts ESnet Stardust Data into elasticsearch.')
 
 # connection
 parser.add_argument('--user', help='Elasticsearch username', default='timescale')
@@ -44,12 +47,12 @@ parser.add_argument('--transform-output-dir', help="directory name to output bin
 parser.add_argument('--transform-output-intermediate', help="save binary intermediate output. See also: --binary-output-dir. default: False", action='store_true')
 parser.add_argument('--transform-input-dir', help="read COPY batches fron binary intermediate input. See also: --binary-output-intermediate.")
 
-args = parser.parse_args()
+arguments = parser.parse_args()
 
-es_client = Elasticsearch(hosts=["http://%s:%s" % (args.host, args.port)], basic_auth=(args.user, args.password))
+es_client = Elasticsearch(hosts=["http://%s:%s" % (arguments.host, arguments.port)], basic_auth=(arguments.user, arguments.password))
 
 col_source = NARROW_FORMAT
-if args.wide:
+if arguments.wide:
     col_source = WIDE_FORMAT
 
 timing_buckets = {
@@ -80,26 +83,26 @@ def timed_assembly(infile, header, batch_size=1, timing_bucket="assembly", offse
     before = time.perf_counter()
     curr_line = 0
     for line in infile:
-        if curr_line < offset or ((curr_line - offset) % args.skip) != 0:
+        if curr_line < offset or ((curr_line - offset) % arguments.skip) != 0:
             if curr_line % 1000 == 0:
                 logging.info("seeking to offset... %s", curr_line)
-            elif curr_line < 1000 and ((curr_line - offset) % args.skip) != 0:
-                logging.info("skipping line %s. Offset: %s Skip: %s Curr_line - offset: %s Curr_line - offset mod skip: %s" % (curr_line, offset, args.skip, (curr_line - offset), ((curr_line - offset) % args.skip) ))
+            elif curr_line < 1000 and ((curr_line - offset) % arguments.skip) != 0:
+                logging.info("skipping line %s. Offset: %s Skip: %s Curr_line - offset: %s Curr_line - offset mod skip: %s" % (curr_line, offset, arguments.skip, (curr_line - offset), ((curr_line - offset) % arguments.skip) ))
             curr_line += 1
             continue
         curr_line += 1
         row = line.rstrip("\n").split("\t")
-        if args.total_partitions:
+        if arguments.total_partitions:
             hash_output = hash_row(row)
-            hash_bucket = int(hash_output, 16) % args.total_partitions
-            if hash_bucket != args.partition:
+            hash_bucket = int(hash_output, 16) % arguments.total_partitions
+            if hash_bucket != arguments.partition:
                 continue
             if curr_line % 1000 == 0:
                 logging.info("row %s: partition %s" % (curr_line, hash_bucket))
 
-        batch.append(assemble(row, header, fmt=WIDE_FORMAT if args.wide else NARROW_FORMAT, original_line=line))
-        if len(batch) == args.batch_size:
-            logging.info('assembled %s values rows (python assembly overhead)' % args.batch_size)
+        batch.append(assemble(row, header, fmt=WIDE_FORMAT if arguments.wide else NARROW_FORMAT, original_line=line))
+        if len(batch) == arguments.batch_size:
+            logging.info('assembled %s values rows (python assembly overhead)' % arguments.batch_size)
             
             # timing details
             after = time.perf_counter()
@@ -113,7 +116,7 @@ def timed_assembly(infile, header, batch_size=1, timing_bucket="assembly", offse
             yield batch
             batch = []
             before = time.perf_counter()
-                
+    
     # yield the last incomplete batch, don't both with min/max statistics
     after = time.perf_counter()
     timing_buckets[timing_bucket]["total"] += execution_time
@@ -136,7 +139,7 @@ def tmpfile_factory(preserve_copy_files, suffix="json"):
         get_file.suffix = suffix
         return get_file
     if preserve_copy_files:
-        tmpfile_factory = tmpdir(args.binary_output_dir, suffix)
+        tmpfile_factory = tmpdir(arguments.binary_output_dir, suffix)
     return tmpfile_factory
 
 def timed_write_transformed(mgr, batch, timing_bucket="write_transformed", factory=tmpfile_factory(False)):
@@ -159,8 +162,8 @@ def timed_bulk_insert(f, timing_bucket="insert"):
     batch = pickle.load(f)
     before = time.perf_counter()
     before_timestamp = datetime.now()
-    es_client.bulk(batch, index=args.values_index)
-    logging.info('.bulk() %s rows (elasticsearch insert time)' % args.batch_size)
+    es_client.bulk(batch, index=arguments.values_index)
+    logging.info('.bulk() %s rows (elasticsearch insert time)' % arguments.batch_size)
     after = time.perf_counter()
     after_timestamp = datetime.now()
     execution_time = after - before
@@ -171,16 +174,16 @@ def timed_bulk_insert(f, timing_bucket="insert"):
         timing_buckets[timing_bucket]["max"] = execution_time
     timing_buckets[timing_bucket]["count"] += 1
     es_client.index(document={
-        "index_name": args.values_index, 
-        "batch_size": args.batch_size,
+        "index_name": arguments.values_index, 
+        "batch_size": arguments.batch_size,
         "start_time": before_timestamp.isoformat(),
         "end_time": after_timestamp.isoformat()
-    }, index=args.scoreboard_index)
+    }, index=arguments.scoreboard_index)
 
 def hash_row(row):
     ROUTER_IDX = 19
     PORT_IDX = 34
-    if args.wide:
+    if arguments.wide:
         ROUTER_IDX = 605
         PORT_IDX = 610
     port_string = "%s::%s" % (row[ROUTER_IDX], row[PORT_IDX])
@@ -188,12 +191,15 @@ def hash_row(row):
 
 total_inserts = 0
 
-if args.transform_input_dir:
-    for filename in sorted(os.listdir(args.transform_input_dir)):
-        with open(os.path.join(args.transform_input_dir, filename), 'rb') as f:
+if arguments.transform_input_dir:
+    for filename in sorted(os.listdir(arguments.transform_input_dir)):
+        with open(os.path.join(arguments.transform_input_dir, filename), 'rb') as f:
             timed_bulk_insert(f)
-            total_inserts += args.batch_size
+            total_inserts += arguments.batch_size
 else:
-    header_line = args.infile.readline()
+    header_line = arguments.infile.readline()
     header = header_line.strip().split("\t")
-    timed_assembly(infile=args.infile, header=header, batch_size=args.batch_size, timing_bucket="values_assembly", offset=args.offset)
+    logging.info('about to call timed_assembly')
+    batches = timed_assembly(infile=arguments.infile, header=header, batch_size=arguments.batch_size, timing_bucket="assembly", offset=arguments.offset)
+    for batch in batches:
+        logging.info("assembled %s rows" % len(batch))
