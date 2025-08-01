@@ -16,7 +16,10 @@ def set_element(d, element, newval):
 def assemble(row, header, fmt=NARROW_FORMAT, original_line=None):
     document = {}
     for key, val in fmt.items():
+        column_offset = header.index(key)
         try:
+            element = val
+            newval = row[column_offset]
             set_element(document, element, newval)
         except:
             import pdb; pdb.set_trace()

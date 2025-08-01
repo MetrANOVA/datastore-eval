@@ -14,6 +14,7 @@ import hashlib
 import pickle
 import sys
 from elasticsearch import Elasticsearch
+import elasticsearch.helpers
 import time
 
 logging.basicConfig(format='%(asctime)s :: %(message)s', level=logging.INFO)
@@ -44,8 +45,8 @@ parser.add_argument('--wide', help="Use stardust 'wide' format, including all co
 
 # intermediate transform output
 parser.add_argument('--transform-output-dir', help="directory name to output binary COPY statements to", default="/tmp/%s" % ''.join(random.choices(string.ascii_letters + string.digits, k=8)))
-parser.add_argument('--transform-output-intermediate', help="save binary intermediate output. See also: --binary-output-dir. default: False", action='store_true')
-parser.add_argument('--transform-input-dir', help="read COPY batches fron binary intermediate input. See also: --binary-output-intermediate.")
+parser.add_argument('--transform-output-intermediate', help="save binary intermediate output. See also: --transform-output-dir. default: False", action='store_true')
+parser.add_argument('--transform-input-dir', help="read COPY batches fron binary intermediate input. See also: --transform-output-intermediate.")
 
 arguments = parser.parse_args()
 
@@ -84,10 +85,10 @@ def timed_assembly(infile, header, batch_size=1, timing_bucket="assembly", offse
     curr_line = 0
     for line in infile:
         if curr_line < offset or ((curr_line - offset) % arguments.skip) != 0:
-            if curr_line % 1000 == 0:
+            if curr_line < offset and curr_line % 1000 == 0:
                 logging.info("seeking to offset... %s", curr_line)
             elif curr_line < 1000 and ((curr_line - offset) % arguments.skip) != 0:
-                logging.info("skipping line %s. Offset: %s Skip: %s Curr_line - offset: %s Curr_line - offset mod skip: %s" % (curr_line, offset, arguments.skip, (curr_line - offset), ((curr_line - offset) % arguments.skip) ))
+                logging.info("(Batching Debug) skipping line %s. Offset: %s Skip: %s Curr_line - offset: %s Curr_line - offset mod skip: %s" % (curr_line, offset, arguments.skip, (curr_line - offset), ((curr_line - offset) % arguments.skip) ))
             curr_line += 1
             continue
         curr_line += 1
@@ -130,7 +131,7 @@ def get_file():
     get_file.calls += 1
     return open(os.path.join(get_file.dirname, fname), "wb+")
 
-def tmpfile_factory(preserve_copy_files, suffix="json"):
+def tmpfile_factory(preserve_files, suffix="json"):
     tmpfile_factory = lambda: tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     def tmpdir(dirname, suffix):
         if not hasattr(get_file, 'calls'):
@@ -138,11 +139,11 @@ def tmpfile_factory(preserve_copy_files, suffix="json"):
             get_file.dirname = dirname
         get_file.suffix = suffix
         return get_file
-    if preserve_copy_files:
-        tmpfile_factory = tmpdir(arguments.binary_output_dir, suffix)
+    if preserve_files:
+        tmpfile_factory = tmpdir(arguments.transform_output_dir, suffix)
     return tmpfile_factory
 
-def timed_write_transformed(mgr, batch, timing_bucket="write_transformed", factory=tmpfile_factory(False)):
+def timed_write_transformed(batch, timing_bucket="write_transformed", factory=tmpfile_factory(False)):
     before = time.perf_counter()
     tmpfile = factory()
     pickle.dump(batch, tmpfile, protocol=pickle.HIGHEST_PROTOCOL)
@@ -162,7 +163,7 @@ def timed_bulk_insert(f, timing_bucket="insert"):
     batch = pickle.load(f)
     before = time.perf_counter()
     before_timestamp = datetime.now()
-    es_client.bulk(batch, index=arguments.values_index)
+    elasticsearch.helpers.bulk(es_client, batch, index=arguments.values_index)
     logging.info('.bulk() %s rows (elasticsearch insert time)' % arguments.batch_size)
     after = time.perf_counter()
     after_timestamp = datetime.now()
@@ -203,3 +204,4 @@ else:
     batches = timed_assembly(infile=arguments.infile, header=header, batch_size=arguments.batch_size, timing_bucket="assembly", offset=arguments.offset)
     for batch in batches:
         logging.info("assembled %s rows" % len(batch))
+        timed_write_transformed(batch, factory=tmpfile_factory(preserve_files=arguments.transform_output_intermediate))
