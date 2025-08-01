@@ -204,7 +204,7 @@ else:
     batches = timed_assembly(infile=arguments.infile, header=header, batch_size=arguments.batch_size, timing_bucket="assembly", offset=arguments.offset)
     for batch in batches:
         total_inserts += len(batch)
-        if total_inserts >= arguments.limit:
-            break
         logging.info("assembled %s rows" % len(batch))
         timed_write_transformed(batch, factory=tmpfile_factory(preserve_files=arguments.transform_output_intermediate))
+        if total_inserts >= arguments.limit:
+            break
