@@ -29,12 +29,13 @@ wait $(jobs -p)
 # then loop over the worker input directories
 for i in `seq 0 1 $WORKERS_MINUS_ONE`;
 do echo $i;
-python insert.py --host $HOST --infile /media/stardust-data/stardust_data-2025-03-28--2025-03-29.reversed.tsv --batch-size $BATCH_SIZE --transform-input-dir "$TRANSFORMED_OUTPUT_DIR/$i" &
+echo python insert.py --host $HOST --batch-size $BATCH_SIZE --transform-input-dir "$TRANSFORMED_OUTPUT_DIR/$i" &
+python insert.py --host $HOST --batch-size $BATCH_SIZE --transform-input-dir "$TRANSFORMED_OUTPUT_DIR/$i" &
 sleep 0.1
 done;
 
 # wait for those jobs...
 wait $(jobs -p)
 
-python print_scoreboard.py --host $host --batch-size $BATCH_SIZE
+python print_scoreboard.py --host $HOST --batch-size $BATCH_SIZE
 
