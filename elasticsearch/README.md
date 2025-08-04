@@ -108,7 +108,10 @@ N.B. This docker command doesn't specify the mount for the SSD data directory, t
 ```
 export ES_HOST_IP=$(whatever you noted down previously)
 export WORKER_COUNT=10 # or whatever worker count you're trying to sample
-export OUTPUT_DIR=/home/andy/transformed-output # or similar
+export OUTPUT_DIR=/home/andy/transformed_output # or similar
+
+#create output dir
+mkdir /home/andy/transformed_output
 
 cd datastore-eval/elasticsearch
 bash run_narrow.sh $WORKER_COUNT $ES_HOST_IP $OUTPUT_DIR

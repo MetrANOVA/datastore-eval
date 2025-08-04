@@ -13,7 +13,7 @@ def set_element(d, element, newval):
         to_set = to_set[key]
     to_set[last_key] = newval
 
-def assemble(row, header, fmt=NARROW_FORMAT, original_line=None):
+def assemble(row, header, fmt=NARROW_FORMAT, original_line=None, no_datastream=False):
     document = {}
     for key, val in fmt.items():
         column_offset = header.index(key)
@@ -23,5 +23,9 @@ def assemble(row, header, fmt=NARROW_FORMAT, original_line=None):
             set_element(document, element, newval)
         except:
             import pdb; pdb.set_trace()
-    return document
+
+    if no_datastream:
+        return document
+
+    return { "_op_type": "create", "_source": document }
 

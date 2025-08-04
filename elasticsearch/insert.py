@@ -38,6 +38,7 @@ parser.add_argument('--skip', help="Only insert every Nth row", type=int, defaul
 parser.add_argument('--offset', help="offset to begin inserts from from input file", type=int, default=0)
 parser.add_argument('--limit', help="total insertion limit", type=int, default=20000)
 parser.add_argument('--batch-size', help="Batch size to do inserts, in rows.", type=int, default=5000)
+parser.add_argument('--no-datastream', help="Disable data stream for inserts", action='store_true')
 
 # input file and format
 parser.add_argument('--infile', help="Read rows from infile. Default: sys.stdin", default=sys.stdin, type=argparse.FileType('r'))
@@ -103,7 +104,7 @@ def timed_assembly(infile, header, batch_size=1, timing_bucket="assembly", offse
             if curr_line % 1000 == 0:
                 logging.info("row %s: partition %s" % (curr_line, hash_bucket))
 
-        batch.append(assemble(row, header, fmt=WIDE_FORMAT if arguments.wide else NARROW_FORMAT, original_line=line))
+        batch.append(assemble(row, header, fmt=WIDE_FORMAT if arguments.wide else NARROW_FORMAT, original_line=line, no_datastream=arguments.no_datastream))
         if len(batch) == arguments.batch_size:
             logging.info('assembled %s values rows (python assembly overhead)' % arguments.batch_size)
             

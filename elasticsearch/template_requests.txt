@@ -31,11 +31,6 @@ PUT _component_template/metranova_base_tsds_mappings
         "strict_date_optional_time",
         "yyyy/MM/dd HH:mm:ss Z||yyyy/MM/dd Z"
       ],
-      "_source": {
-        "mode": "synthetic",
-        "excludes": [],
-        "includes": []
-      },
       "dynamic": true,
       "dynamic_templates": [
         {
