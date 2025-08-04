@@ -25,8 +25,65 @@ You'll need to create ES target machines, similar to the `datastoreeval-small`, 
 Setup Notes:
 - Make sure you use the correct SSD type: **"SSD persistent disk"** for the data directory for ES docker. This caused *very non-trivial error* while doing testing.
 - Make sure you install the XFS tools packages for the OS.
-- You'll have to format the SSD after spinning up the machine. We used XFS for all data volumes. Looking up the correct formatting commands for XFS is a PITA. Sorry.
+- You'll have to format the SSD after spinning up the machine. We used XFS for all data volumes. For Ubuntu, the XFS commands are ass follows:
+```
+sudo -s
+lsblk #get the id of the device (e.g sdb)
+apt install xfsprogs #already installed on non-minimal
+mkfs.xfs /dev/sdb
+mkdir /mnt/data
+mount -t xfs /dev/sdb /mnt/data
+chmod -R 777 /mnt/data/ #make sure elastic can write to it
+```
 - You may or may not to want to add the mount to fstab. I didn't, but brayton did. I just don't recall how to do this in linux off the top of my head, so didn't bother.
+- Commands to install docker on ubuntu:
+```
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+apt update
+apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+docker run hello-world
+```
+- I like to run an apache reverse proxy to kibana. Commands to setup apache:
+
+```
+apt install apache2
+htpasswd -c /etc/apache2/.htpasswd metranova #create a user named metranova for kibana
+cat << EOF | sudo tee /etc/apache2/conf-available/kibana.conf > /dev/null
+<IfModule proxy_module>
+    ProxyRequests Off
+    <Proxy *>
+        <IfVersion >= 2.4>
+            Require all granted
+        </IfVersion>
+        <IfVersion < 2.4>
+            Order deny,allow
+            Allow from all
+        </IfVersion>
+    </Proxy>
+
+    # The directives below apply to the root URL "/"
+    <Location "/">
+        AuthType Basic
+        AuthName "Restricted Area"
+        AuthUserFile /etc/apache2/.htpasswd
+        Require valid-user
+
+        # Proxy directives for the location
+        ProxyPass http://localhost:5601/
+        ProxyPassReverse http://localhost:5601/
+        ProxyPreserveHost On
+    </Location>
+</IfModule>
+EOF
+a2enmod ssl proxy proxy_http kibana
+a2ensite default-ssl
+systemctl restart apache2
+```
+
+
 - Make sure you expose port 9200 on the docker container to the host,
 - Make sure the host's port 9200 is public on its "google internal" (192.168.x.x) ip address
 - Note down the "google internal" IP of the machine. This is the value you'll use for `$ES_HOST_IP` below

@@ -22,8 +22,8 @@ logging.basicConfig(format='%(asctime)s :: %(message)s', level=logging.INFO)
 parser = argparse.ArgumentParser(description='Inserts ESnet Stardust Data into elasticsearch.')
 
 # connection
-parser.add_argument('--user', help='Elasticsearch username', default='timescale')
-parser.add_argument('--password', help='Elasticsearch User Password', default='timescale')
+parser.add_argument('--user', help='Elasticsearch username')
+parser.add_argument('--password', help='Elasticsearch User Password')
 parser.add_argument('--host', help="remote elastic host", default='localhost')
 parser.add_argument('--port', help="remote elastic port", default='9200')
 
@@ -49,8 +49,10 @@ parser.add_argument('--transform-output-intermediate', help="save binary interme
 parser.add_argument('--transform-input-dir', help="read COPY batches fron binary intermediate input. See also: --transform-output-intermediate.")
 
 arguments = parser.parse_args()
-
-es_client = Elasticsearch(hosts=["http://%s:%s" % (arguments.host, arguments.port)], basic_auth=(arguments.user, arguments.password))
+basic_auth = None
+if arguments.user and arguments.password:
+    basic_auth = (arguments.user, arguments.password)
+es_client = Elasticsearch(hosts=["http://%s:%s" % (arguments.host, arguments.port)], basic_auth=basic_auth)
 
 col_source = NARROW_FORMAT
 if arguments.wide:

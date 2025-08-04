@@ -1,0 +1,25 @@
+version: '3.8'
+services:
+  elastic:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.1.0
+    environment:
+      - node.roles=master,data,ingest
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms128g -Xmx128g #change this to 50% memory of your system
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+    volumes:
+      - /mnt/data:/usr/share/elasticsearch/data
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.1.0
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elastic:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elastic
