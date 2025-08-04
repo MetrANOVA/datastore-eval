@@ -28,7 +28,7 @@ parser.add_argument('--host', help="remote elastic host", default='localhost')
 parser.add_argument('--port', help="remote elastic port", default='9200')
 
 # indexes to use
-parser.add_argument('--values-index', help="Table to insert values into. Receives both values and metadata (in 'metadata' column) when strategy is 'inline-metadata'", default='values')
+parser.add_argument('--values-index', help="Table to insert values into. Receives both values and metadata (in 'metadata' column) when strategy is 'inline-metadata'", default='metranova_values')
 parser.add_argument('--scoreboard-index', help="Table to insert metrics/scoreboard info.", default='scoreboard')
 
 # partitioning and insert options

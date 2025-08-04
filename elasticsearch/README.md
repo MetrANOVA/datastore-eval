@@ -12,6 +12,9 @@ cd datastore-eval/elasticsearch
 # create virtualenv
 python3 -m venv venv
 
+#enter venv
+. venv/bin/activate
+
 # install requirements
 pip install -r requirements.txt
 ```
