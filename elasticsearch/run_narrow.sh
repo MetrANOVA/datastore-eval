@@ -1,6 +1,7 @@
 WORKERS=$1
 HOST=$2
 TRANSFORMED_OUTPUT_DIR=$3
+SKIP_SLICE=$4
 
 WORKERS_MINUS_ONE=$(($WORKERS-1))
 
@@ -11,22 +12,24 @@ BATCH_SIZE=15000
 
 source venv/bin/activate
 
-# do table drop here
+# if SKIP_SLICE is not set, the prep data. Note: any value skips this (even 0)
+if [ -z "$SKIP_SLICE" ]; then
+    # do table drop here
+    rm -R $TRANSFORMED_OUTPUT_DIR
+    mkdir -p $TRANSFORMED_OUTPUT_DIR
 
-rm -R $TRANSFORMED_OUTPUT_DIR
-mkdir -p $TRANSFORMED_OUTPUT_DIR
+    for i in `seq 0 1 $WORKERS_MINUS_ONE`;
+    do mkdir -p "$TRANSFORMED_OUTPUT_DIR/$i";
+    done;
 
-for i in `seq 0 1 $WORKERS_MINUS_ONE`;
-do mkdir -p "$TRANSFORMED_OUTPUT_DIR/$i";
-done;
+    for i in `seq 0 1 $WORKERS_MINUS_ONE`;
+    do echo $i;
+    python insert.py --infile /media/stardust-data/stardust_data-2025-03-28--2025-03-29.reversed.tsv --offset $i --skip $WORKERS --limit $PER_WORKER_LIMIT --batch-size $BATCH_SIZE --transform-output-dir "$TRANSFORMED_OUTPUT_DIR/$i" --transform-output-intermediate &
+    done;
 
-for i in `seq 0 1 $WORKERS_MINUS_ONE`;
-do echo $i;
-python insert.py --infile /media/stardust-data/stardust_data-2025-03-28--2025-03-29.reversed.tsv --offset $i --skip $WORKERS --limit $PER_WORKER_LIMIT --batch-size $BATCH_SIZE --transform-output-dir "$TRANSFORMED_OUTPUT_DIR/$i" --transform-output-intermediate &
-done;
-
-# wait for all background jobs to complete...
-wait $(jobs -p)
+    # wait for all background jobs to complete...
+    wait $(jobs -p)
+fi
 
 # then loop over the worker input directories
 for i in `seq 0 1 $WORKERS_MINUS_ONE`;
