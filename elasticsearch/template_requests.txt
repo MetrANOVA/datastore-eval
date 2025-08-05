@@ -37,38 +37,6 @@ PUT _component_template/metranova_base_tsds_mappings
       "dynamic": true,
       "dynamic_templates": [
         {
-          "ip_field": {
-            "mapping": {
-              "type": "ip"
-            },
-            "match": "ip"
-          }
-        },
-        {
-          "ipv4_field": {
-            "mapping": {
-              "type": "ip"
-            },
-            "match": "ipv4"
-          }
-        },
-        {
-          "ipv6_field": {
-            "mapping": {
-              "type": "ip"
-            },
-            "match": "ipv6"
-          }
-        },
-        {
-          "ip_suffix_field": {
-            "mapping": {
-              "type": "ip"
-            },
-            "match": "*_ip"
-          }
-        },
-        {
           "histogram_suffix_field": {
             "mapping": {
               "type": "histogram"
