@@ -11,10 +11,13 @@ PUT _component_template/metranova_base_tsds_settings
           }
         },
         "refresh_interval": "60s",
+        "time_series": {
+            "start_time": "2025-01-01T00:00:00.000Z"
+        },
         "look_ahead_time": "5m",
         "number_of_replicas": "0",
         "routing_path": [
-          "meta.id"
+          "device", "name"
         ]
       }
     }
@@ -63,22 +66,6 @@ PUT _component_template/metranova_base_tsds_mappings
               "type": "ip"
             },
             "match": "*_ip"
-          }
-        },
-        {
-          "location": {
-            "mapping": {
-              "type": "geo_point"
-            },
-            "match": "location"
-          }
-        },
-        {
-          "location_suffix_field": {
-            "mapping": {
-              "type": "geo_point"
-            },
-            "match": "*_location"
           }
         },
         {
@@ -144,7 +131,11 @@ PUT _component_template/metranova_base_tsds_mappings
       ],
       "date_detection": true,
       "properties": {
-        "meta.id": {
+        "device": {
+          "time_series_dimension": true,
+          "type": "keyword"
+        },
+        "name": {
           "time_series_dimension": true,
           "type": "keyword"
         }

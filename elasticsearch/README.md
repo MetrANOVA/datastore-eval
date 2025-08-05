@@ -81,7 +81,8 @@ cat << EOF | sudo tee /etc/apache2/conf-available/kibana.conf > /dev/null
     </Location>
 </IfModule>
 EOF
-a2enmod ssl proxy proxy_http kibana
+a2enmod ssl proxy proxy_http
+a2enconf kibana
 a2ensite default-ssl
 systemctl restart apache2
 ```
