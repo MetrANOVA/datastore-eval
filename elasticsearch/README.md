@@ -94,13 +94,10 @@ systemctl restart apache2
 
 ## Docker command
 
-```
-docker run -e discovery.type="single-node" -e ES_JAVA_OPTS="-Xmx750m -Xms750m" -e ELASTIC_USERNAME="elastic" -e ELASTIC_PASSWORD="DkIedPPSCb"  -p 9200:9200 -e xpack.security.enabled="false" --name es elasticsearch:9.0.2
-```
-
-N.B. This docker command doesn't specify the mount for the SSD data directory, that exercise is "left to the reader" sorry.
-
-(if you need to restart it, don't forget to `docker rm es` first)
+1. Copy the docker-compose.yml file provided to your system where you want to run elasticsearch.
+2. Edit the file so that `ES_JAVA_OPTS=` sets the `-Xms` and `-Xmx` to 50% the system memory.
+3. Run `docker compose up -d`
+4. You should now have a running elastic instance on port 9200 of the internal network. You should also have a Kibana instance available on public interface port 443 via the Apache proxy. Login using the user/pass you setup when configuring Apache proxy. 
 
 # 3. Run process harness
 
