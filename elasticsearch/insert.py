@@ -166,7 +166,7 @@ def timed_bulk_insert(f, timing_bucket="insert"):
     batch = pickle.load(f)
     before = time.perf_counter()
     before_timestamp = datetime.now()
-    elasticsearch.helpers.bulk(es_client, batch, index=arguments.values_index)
+    elasticsearch.helpers.bulk(es_client, batch, index=arguments.values_index, raise_on_error=False)
     logging.info('.bulk() %s rows (elasticsearch insert time)' % arguments.batch_size)
     after = time.perf_counter()
     after_timestamp = datetime.now()
