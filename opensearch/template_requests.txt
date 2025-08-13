@@ -1,0 +1,125 @@
+PUT _component_template/metranova_base_tsds_settings
+{
+  "version": 1,
+  "template": {
+    "settings": {
+      "index": {
+        "mode": "time_series",
+        "mapping": {
+          "total_fields": {
+            "limit": "4000"
+          }
+        },
+        "refresh_interval": "60s",
+        "time_series": {
+            "start_time": "2025-01-01T00:00:00.000Z"
+        },
+        "look_ahead_time": "5m",
+        "number_of_replicas": "0",
+        "routing_path": [
+          "device", "name"
+        ]
+      }
+    }
+  }
+}
+
+PUT _component_template/metranova_base_tsds_mappings
+{
+  "version": 1,
+  "template": {
+    "mappings": {
+      "numeric_detection": false,
+      "dynamic_date_formats": [
+        "strict_date_optional_time",
+        "yyyy/MM/dd HH:mm:ss Z||yyyy/MM/dd Z"
+      ],
+      "dynamic": true,
+      "dynamic_templates": [
+        {
+          "histogram_suffix_field": {
+            "mapping": {
+              "type": "histogram"
+            },
+            "match": "*_hist"
+          }
+        },
+        {
+          "cpu_usage_double": {
+            "path_match": [
+              "values.cpu_capacity_usage_*.val",
+              "values.cpu_usage_*.val"
+            ],
+            "mapping": {
+              "type": "double"
+            }
+          }
+        },
+        {
+          "default_string_to_keyword": {
+            "mapping": {
+              "type": "keyword"
+            },
+            "match_mapping_type": "string"
+          }
+        },
+        {
+          "timeseries_metrics_double": {
+            "path_match": "values.*",
+            "mapping": {
+              "time_series_metric": "gauge",
+              "type": "double"
+            },
+            "match_mapping_type": "double"
+          }
+        },
+        {
+          "timeseries_metrics_unsigned_long": {
+            "path_match": [
+              "values.*_pkts.val",
+              "values.*_bits.val"
+            ],
+            "mapping": {
+              "time_series_metric": "gauge",
+              "type": "unsigned_long"
+            },
+            "match_mapping_type": "long"
+          }
+        },
+        {
+          "timeseries_metrics_long": {
+            "path_match": "values.*",
+            "mapping": {
+              "time_series_metric": "gauge",
+              "type": "long"
+            },
+            "match_mapping_type": "long"
+          }
+        }
+      ],
+      "date_detection": true,
+      "properties": {
+        "device": {
+          "time_series_dimension": true,
+          "type": "keyword"
+        },
+        "name": {
+          "time_series_dimension": true,
+          "type": "keyword"
+        }
+      }
+    }
+  }
+}
+
+PUT _index_template/metranova
+{
+  "index_patterns": [
+    "metranova*"
+  ],
+  "data_stream": {},
+  "composed_of": [
+    "metranova_base_tsds_settings",
+    "metranova_base_tsds_mappings"
+  ]
+}
