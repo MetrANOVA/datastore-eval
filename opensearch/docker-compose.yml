@@ -5,8 +5,8 @@ services:
     environment:
       - node.roles=master,data,ingest
       - discovery.type=single-node
-      - xpack.security.enabled=false
-      - OPENSEARCH_JAVA_OPTS=-Xms128g -Xmx128g #change this to 50% memory of your system
+      - OPENSEARCH_JAVA_OPTS=-Xms8g -Xmx8g #change this to 50% memory of your system
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD="akdjhf@hdJ9uvdjsvvjvsvhUI&G36789"
     ulimits:
       memlock:
         soft: -1
@@ -15,11 +15,13 @@ services:
       - "9200:9200"
     volumes:
       - /mnt/data:/usr/share/opensearch/data
-  kibana:
-    image: docker.elastic.co/kibana/kibana:9.1.0
-    environment:
-      - ELASTICSEARCH_HOSTS=http://opensearch:9200
-    ports:
-      - "5601:5601"
-    depends_on:
-      - opensearch
+      - /root/datastore-eval/opensearch/anonymous-auth-config.yml:/usr/share/opensearch/config/opensearch-security/config.yml
+      - /root/datastore-eval/opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml
+#  kibana:
+#    image: docker.elastic.co/kibana/kibana:9.1.0
+#    environment:
+#      - ELASTICSEARCH_HOSTS=http://opensearch:9200
+#    ports:
+#      - "5601:5601"
+#    depends_on:
+#      - opensearch
