@@ -14,7 +14,7 @@ parser.add_argument('--batch-size', help="Specify the insert batch size", type=i
 
 arguments = parser.parse_args()
 
-os_client = OpenSearch(hosts=["http://%s:%s" % (arguments.host, arguments.port)], basic_auth=(arguments.user, arguments.password))
+os_client = OpenSearch(hosts=[{"host": arguments.host, "port": arguments.port}], basic_auth=(arguments.user, arguments.password))
 
 doc = {
         'size' : 0,

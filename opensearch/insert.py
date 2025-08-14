@@ -52,7 +52,7 @@ arguments = parser.parse_args()
 basic_auth = None
 if arguments.user and arguments.password:
     basic_auth = (arguments.user, arguments.password)
-os_client = OpenSearch(hosts=["http://%s:%s" % (arguments.host, arguments.port)], basic_auth=basic_auth)
+os_client = OpenSearch(hosts=[{"host": arguments.host, "port": arguments.port }], basic_auth=basic_auth)
 
 col_source = NARROW_FORMAT
 if arguments.wide:
@@ -176,7 +176,7 @@ def timed_bulk_insert(f, timing_bucket="insert"):
     if timing_buckets[timing_bucket]["max"] is None or execution_time > timing_buckets[timing_bucket]["max"]:
         timing_buckets[timing_bucket]["max"] = execution_time
     timing_buckets[timing_bucket]["count"] += 1
-    os_client.index(document={
+    os_client.index(body={
         "index_name": arguments.values_index, 
         "batch_size": arguments.batch_size,
         "start_time": before_timestamp.isoformat(),
