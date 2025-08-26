@@ -32,7 +32,8 @@ def create_timeseries_collection(mongo_uri, db_name, collection_name):
 
     timeseries_options = {
         "timeField": "timestamp",
-        "metaField": "metadata",
+        "metaField": "meta",
+        "granularity": "minutes",
     }
 
     try:
