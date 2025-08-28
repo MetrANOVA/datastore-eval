@@ -11,9 +11,11 @@ from pathlib import Path
 
 # --- Configuration ---
 TSV_TIMESTAMP_COL = "@timestamp"
+USE_TS_ID = False #if set then use TSV_TS_ID, otherwise use TSV_NODE_COL and TSV_INTERFACE_COL
+TSV_TS_ID = "ts_id"  # Mapped to 'meta.ts_id' in MongoDB metadata
 TSV_NODE_COL = "meta.device"
 TSV_INTERFACE_COL = "meta.name"
-DISCARD_TSV_FIELDS = {"@collect_time_min", "@exit_time", "@processing_time"}
+DISCARD_TSV_FIELDS = {"@collect_time_min", "@exit_time", "@processing_time", "start"}
 MONGO_TIME_FIELD = "timestamp"
 MONGO_META_FIELD = "meta"
 
@@ -71,9 +73,11 @@ def precompute_main(
     print("Building metadata template from TSV header...")
     for key in header_list:
         path_to_set = None
-        if key == TSV_NODE_COL:
+        if USE_TS_ID and key == TSV_TS_ID:
+            path_to_set = TSV_TS_ID
+        elif not USE_TS_ID and key == TSV_NODE_COL:
             path_to_set = "device"
-        elif key == TSV_INTERFACE_COL:
+        elif not USE_TS_ID and key == TSV_INTERFACE_COL:
             path_to_set = "interfaceName"
         elif key.startswith("meta."):
             path_to_set = key.replace("meta.", "", 1)
@@ -106,12 +110,15 @@ def precompute_main(
             for row_data_dict in reader:
                 processed_data_lines += 1
 
-                node_val = row_data_dict.get(TSV_NODE_COL)
-                intf_val = row_data_dict.get(TSV_INTERFACE_COL)
-                if not node_val or not intf_val:
-                    continue
-
-                series_id_str = f"{node_val}|{intf_val}"
+                if USE_TS_ID:
+                    series_id_str = row_data_dict.get(TSV_TS_ID)
+                else:
+                    node_val = row_data_dict.get(TSV_NODE_COL)
+                    intf_val = row_data_dict.get(TSV_INTERFACE_COL)
+                    if not node_val or not intf_val:
+                        continue
+                    series_id_str = f"{node_val}|{intf_val}"
+                
                 hash_val = zlib.adler32(series_id_str.encode("utf-8"))
                 worker_idx = hash_val % total_workers
 
@@ -144,9 +151,9 @@ def precompute_main(
                                 temp_doc[new_key] = 0.0  # Use 0.0 on conversion error
                     else:  # This is a metadata field
                         target_meta_path = None
-                        if key == TSV_NODE_COL:
+                        if not USE_TS_ID and key == TSV_NODE_COL:
                             target_meta_path = "device"
-                        elif key == TSV_INTERFACE_COL:
+                        elif not USE_TS_ID and key == TSV_INTERFACE_COL:
                             target_meta_path = "interfaceName"
                         elif key.startswith("meta."):
                             target_meta_path = key.replace("meta.", "", 1)
@@ -157,9 +164,11 @@ def precompute_main(
                         if not is_empty and target_meta_path:
                             set_nested_value(metadata_subdoc, target_meta_path, value)
 
-                if (
-                    metadata_subdoc.get("device") is None
-                    or metadata_subdoc.get("interfaceName") is None
+                if (USE_TS_ID and metadata_subdoc.get(TSV_TS_ID) is None) or (
+                    not USE_TS_ID and (
+                        metadata_subdoc.get("device") is None
+                        or metadata_subdoc.get("interfaceName") is None
+                    )
                 ):
                     continue
 
