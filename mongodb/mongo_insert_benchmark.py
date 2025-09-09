@@ -13,9 +13,15 @@ from pymongo.errors import BulkWriteError, ConnectionFailure
 
 # --- Standardized Configuration ---
 TSV_TIMESTAMP_COL = "@timestamp"
+TSV_TS_ID = "ts_id"  # Mapped to 'metadata.ts_id' in MongoDB metadata
 TSV_NODE_COL = "meta.device"  # Mapped to 'device' in MongoDB metadata
 TSV_INTERFACE_COL = "meta.name"  # Mapped to 'interfaceName' in MongoDB metadata
-REQUIRED_TSV_COLS = [TSV_TIMESTAMP_COL, TSV_NODE_COL, TSV_INTERFACE_COL]
+USE_TS_ID = False
+REQUIRED_TSV_COLS = []
+if USE_TS_ID:
+    REQUIRED_TSV_COLS = [TSV_TIMESTAMP_COL, TSV_TS_ID]
+else:
+    REQUIRED_TSV_COLS = [TSV_TIMESTAMP_COL, TSV_NODE_COL, TSV_INTERFACE_COL]
 FIXED_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 DISCARD_TSV_FIELDS = {"@collect_time_min", "@exit_time", "@processing_time"}
 
@@ -171,19 +177,27 @@ def insert_data(
                         file_line_index += 1
                         continue
 
-                    # 2. Handle specific mappings for node and interface (always go to metadata)
+                    # 2. Handle specific mappings for ts_id, node, and interface (always go to metadata)
+                    ts_id_val = row_data_dict.get(TSV_TS_ID)
                     node_val = row_data_dict.get(TSV_NODE_COL)
                     intf_val = row_data_dict.get(TSV_INTERFACE_COL)
-                    if node_val:
-                        metadata_subdoc["device"] = node_val
+                    if USE_TS_ID:
+                        if ts_id_val:
+                            metadata_subdoc["ts_id"] = ts_id_val
+                        else:
+                            parse_errors.append(f"Missing/Empty '{TSV_TS_ID}'")
+                            valid_doc = False
                     else:
-                        parse_errors.append(f"Missing/Empty '{TSV_NODE_COL}'")
-                        valid_doc = False
-                    if intf_val:
-                        metadata_subdoc["interfaceName"] = intf_val
-                    else:
-                        parse_errors.append(f"Missing/Empty '{TSV_INTERFACE_COL}'")
-                        valid_doc = False
+                        if node_val:
+                            metadata_subdoc["device"] = node_val
+                        else:
+                            parse_errors.append(f"Missing/Empty '{TSV_NODE_COL}'")
+                            valid_doc = False
+                        if intf_val:
+                            metadata_subdoc["interfaceName"] = intf_val
+                        else:
+                            parse_errors.append(f"Missing/Empty '{TSV_INTERFACE_COL}'")
+                            valid_doc = False
 
                     # If required device/interfaceName are missing, the document is invalid
                     if not valid_doc:
@@ -196,11 +210,7 @@ def insert_data(
 
                     # 3. Process all other fields from the TSV row
                     for key, value in row_data_dict.items():
-                        if (
-                            key == TSV_TIMESTAMP_COL
-                            or key == TSV_NODE_COL
-                            or key == TSV_INTERFACE_COL
-                        ):
+                        if key in REQUIRED_TSV_COLS:
                             continue  # Already handled
 
                         if key in DISCARD_TSV_FIELDS:

@@ -1,0 +1,47 @@
+WORKERS=$1
+HOST=$2
+TRANSFORMED_OUTPUT_DIR=$3
+SKIP_SLICE=$4
+
+WORKERS_MINUS_ONE=$(($WORKERS-1))
+
+LIMIT=10000000
+PER_WORKER_LIMIT=$(($LIMIT / $WORKERS))
+
+BATCH_SIZE=15000
+
+source venv/bin/activate
+
+# if SKIP_SLICE is not set, the prep data. Note: any value skips this (even 0)
+if [ -z "$SKIP_SLICE" ]; then
+    # do table drop here
+
+    rm -R $TRANSFORMED_OUTPUT_DIR
+    mkdir -p $TRANSFORMED_OUTPUT_DIR
+
+    for i in `seq 0 1 $WORKERS_MINUS_ONE`;
+    do mkdir -p "$TRANSFORMED_OUTPUT_DIR/$i";
+    done;
+
+    for i in `seq 0 1 $WORKERS_MINUS_ONE`;
+    do echo $i;
+    python insert.py --flow --infile /media/tmpdata/flow-20250821.tsv --offset $i --skip $WORKERS --limit $PER_WORKER_LIMIT --batch-size $BATCH_SIZE --transform-output-dir "$TRANSFORMED_OUTPUT_DIR/$i" --transform-output-intermediate &
+    done;
+
+    # wait for all background jobs to complete...
+    wait $(jobs -p)
+fi 
+
+# then loop over the worker input directories
+for i in `seq 0 1 $WORKERS_MINUS_ONE`;
+do echo $i;
+echo python insert.py --flow --host $HOST --batch-size $BATCH_SIZE --transform-input-dir "$TRANSFORMED_OUTPUT_DIR/$i" &
+python insert.py --flow --host $HOST --batch-size $BATCH_SIZE --transform-input-dir "$TRANSFORMED_OUTPUT_DIR/$i" &
+sleep 0.1
+done;
+
+# wait for those jobs...
+wait $(jobs -p)
+
+python print_scoreboard.py --host $HOST --batch-size $BATCH_SIZE
+

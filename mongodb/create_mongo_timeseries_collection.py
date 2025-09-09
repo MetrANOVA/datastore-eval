@@ -7,7 +7,7 @@ from pymongo import MongoClient
 from pymongo.errors import CollectionInvalid, OperationFailure
 
 
-def create_timeseries_collection(mongo_uri, db_name, collection_name):
+def create_timeseries_collection(mongo_uri, db_name, collection_name, flow):
     """
     Connects to MongoDB and creates a time series collection with appropriate options,
     a specific compound index on device/interfaceName, and a wildcard index
@@ -112,8 +112,14 @@ def create_timeseries_collection(mongo_uri, db_name, collection_name):
         )
 
     # --- 1. Specific Compound Index for Primary Identifiers ---
-    index_name_primary = "metadata_device_interface_idx"
-    index_keys_primary = [("metadata.device", 1), ("metadata.interfaceName", 1)]
+    if flow:
+        index_name_primary = "metadata_tsid_idx"
+        # this field is a hash of 5 tuple + exporting router
+        index_keys_primary = [("metadata.ts_id", 1)]
+    else:
+        index_name_primary = "metadata_device_interface_idx"
+        index_keys_primary = [("metadata.device", 1), ("metadata.interfaceName", 1)]
+
     try:
         collection.create_index(index_keys_primary, name=index_name_primary)
         print(
@@ -185,6 +191,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--collection", required=True, help="Time series collection name"
     )
+    parser.add_argument('--flow', action='store_true')
 
     args = parser.parse_args()
-    create_timeseries_collection(args.uri, args.db, args.collection)
+    create_timeseries_collection(args.uri, args.db, args.collection, args.flow)
