@@ -2,7 +2,7 @@ import argparse
 import csv
 import json
 import datetime
-from mappings import NARROW_FORMAT, WIDE_FORMAT
+from mappings import NARROW_FORMAT, WIDE_FORMAT, WIDE_NORMALIZED_FORMAT, FLOW_FORMAT
 from datetime import datetime
 from pgcopy import CopyManager
 import psycopg2
@@ -16,7 +16,6 @@ import random
 import string
 import hashlib
 
-logging.basicConfig(format='%(asctime)s :: %(message)s', level=logging.INFO)
 
 parser = argparse.ArgumentParser(description='Inserts ESnet Stardust Data into timescaledb, producing a timing summary report.')
 
@@ -30,6 +29,8 @@ parser.add_argument('--strategy', help='metadata insertion strategy. Options are
                     ' When "inline-metadata", metadata objects will be inserted into the same row as values.', default="hashed-metadata")
 parser.add_argument('--infile', help="Read rows from infile. Default: sys.stdin", default=sys.stdin, type=argparse.FileType('r'))
 parser.add_argument('--wide', help="Use stardust 'wide' format, including all columns.", action='store_true')
+parser.add_argument('--flow', help="Use stardust 'flow' format, including all flow columns.", action='store_true')
+parser.add_argument('--normalized', help="For 'wide' format, normalize metadata into columns.", action='store_true')
 parser.add_argument('--batch-size', help="Batch size to do inserts, in rows.", type=int, default=5000)
 parser.add_argument('--limit', help="total insertion limit", type=int, default=20000)
 parser.add_argument('--skip', help="Only insert every Nth row", type=int, default=1)
@@ -44,17 +45,37 @@ parser.add_argument('--partition', help="the binary output partition to prepare"
 
 args = parser.parse_args()
 
+worker_log_string = "[%s/%s]" % (args.offset + 1, args.skip)
+if args.partition:
+    worker_log_string = "[%s/%s]" % (args.partition, args.total_partitions)
+    
+logging.basicConfig(format=f'%(asctime)s :: {worker_log_string} :: %(message)s', level=logging.INFO)
+
 conn = psycopg2.connect(database=args.db, user=args.db_user, host=args.host, port=5432)
 
 col_source = NARROW_FORMAT
 if args.wide:
     col_source = WIDE_FORMAT
+    if args.wide and args.normalized:
+        col_source = WIDE_NORMALIZED_FORMAT
+if args.flow:
+    col_source = FLOW_FORMAT
 
 columns = [val for key, val in col_source.items() if not key.startswith("meta")]
 columns.append("metadata") # in all formats and strategies, we use a special "metadata" column
+if args.normalized:
+    columns = [val for key, val in col_source.items() if not key.startswith("values.queue")]
+    columns.append("queues")
+if args.flow:
+    columns = [val for key, val in col_source.items() if not val.startswith("bgp") and not val.startswith("esdb") and not val.startswith("mpls") and not val.startswith("scireg")]
+    columns.append("bgp")
+    columns.append("esdb")
+    columns.append("mpls")
+    columns.append("scireg")
 
+    
 if args.binary_output_intermediate:
-    logging.warn("Saving binary COPY output to '%s'" % args.binary_output_dir)
+    logging.warn("Saving binary COPY output to '%s'" % (args.binary_output_dir))
 
 managers = {
     'values': CopyManager(conn, args.values_table, columns)
@@ -121,7 +142,10 @@ def timed_write_binary(mgr, batch, timing_bucket="values_write_binary", factory=
     tmpfile = factory()
     def get_tmpfile():
         return tmpfile
-    mgr.copy(batch, get_tmpfile)
+    try:
+        mgr.copy(batch, get_tmpfile)
+    except Exception as e:
+        import pdb; pdb.set_trace()
     # timing details
     after = time.perf_counter()
     execution_time = after - before
@@ -209,6 +233,13 @@ def timed_assembly(infile, header, batch_size=1, timing_bucket="values_assembly"
     batch = []
     before = time.perf_counter()
     curr_line = 0
+    fmt = NARROW_FORMAT
+    if args.wide:
+        fmt = WIDE_FORMAT
+        if args.normalized:
+            fmt = WIDE_NORMALIZED_FORMAT
+    if args.flow:
+        fmt = FLOW_FORMAT
     for line in infile:
         if curr_line < offset or ((curr_line - offset) % args.skip) != 0:
             if curr_line % 1000 == 0:
@@ -226,8 +257,11 @@ def timed_assembly(infile, header, batch_size=1, timing_bucket="values_assembly"
                 continue
             if curr_line % 1000 == 0:
                 logging.info("row %s: partition %s" % (curr_line, hash_bucket))
-
-        batch.append(assemble(row, header, fmt=WIDE_FORMAT if args.wide else NARROW_FORMAT, original_line=line))
+        try:
+            batch.append(assemble(row, header, fmt=fmt, original_line=line, normalized=args.normalized, flow=args.flow))
+        except Exception as e:
+            logging.error("error assembling row! %s" % e)
+            continue
         if len(batch) == args.batch_size:
             logging.info('assembled %s values rows (python assembly overhead)' % args.batch_size)
             
