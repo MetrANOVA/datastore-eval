@@ -134,6 +134,7 @@ def launch_workers(args):
                 worker_command_str = (
                     f"{base_worker_command} --tsv_file {file_to_process}"
                 )
+                print(worker_command_str)
                 command_list = shlex.split(worker_command_str)
 
                 print(f"Launching worker for '{file_to_process.name}'...")
@@ -152,6 +153,7 @@ def launch_workers(args):
                     )
                     signal_handler(None, None)
 
+            sys.exit()
             if not task_queue and not running_processes:
                 break  # All done
 

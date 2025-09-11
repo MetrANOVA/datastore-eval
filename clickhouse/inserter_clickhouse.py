@@ -11,10 +11,11 @@ import clickhouse_connect
 
 # --- Standardized Configuration ---
 TSV_TIMESTAMP_COL = "@timestamp"
-TSV_NODE_COL = "meta.device"
-TSV_INTERFACE_COL = "meta.name"
+TSV_NODE_COL = "meta.iface_in.device"
+TSV_INTERFACE_COL = "meta.iface_in.name"
 REQUIRED_TSV_COLS = [TSV_TIMESTAMP_COL, TSV_NODE_COL, TSV_INTERFACE_COL]
-DISCARD_TSV_FIELDS = {"@collect_time_min", "@exit_time", "@processing_time"}
+DISCARD_TSV_FIELDS = {"@collect_time_min", "@exit_time", "@processing_time", "@start_time"}
+SCOREBOARD_TABLE = "scoreboard"
 
 
 # --- Helper Functions ---
@@ -77,11 +78,11 @@ def create_tsv_to_ch_column_mapping(tsv_header_names: list, ch_schema_map: dict)
 
         target_ch_key_unquoted = tsv_col_name
         if tsv_col_name == TSV_TIMESTAMP_COL:
-            target_ch_key_unquoted = "timestamp"
+            target_ch_key_unquoted = "@timestamp"
         elif tsv_col_name == TSV_NODE_COL:
-            target_ch_key_unquoted = "device"
+            target_ch_key_unquoted = "meta.iface_in.device"
         elif tsv_col_name == TSV_INTERFACE_COL:
-            target_ch_key_unquoted = "interfaceName"
+            target_ch_key_unquoted = "meta.iface_in.name"
         elif tsv_col_name.startswith("values."):
             target_ch_key_unquoted = tsv_col_name.replace("values.", "", 1)
         elif tsv_col_name.startswith("meta."):
@@ -94,6 +95,11 @@ def create_tsv_to_ch_column_mapping(tsv_header_names: list, ch_schema_map: dict)
             quoted_target_key = f"`{target_ch_key_unquoted}`"
             if quoted_target_key in ch_column_names_in_schema:
                 found_ch_col_name = quoted_target_key
+        # if we *still* haven't found a column name after munging,
+        # try 'no munging'
+        if not found_ch_col_name:
+            if tsv_col_name in ch_column_names_in_schema:
+                found_ch_col_name = tsv_col_name
 
         if found_ch_col_name:
             mapping[tsv_col_name] = found_ch_col_name
@@ -258,18 +264,38 @@ def main_insert_logic(args):
 
                 if len(batch_data) >= args.batch_size:
                     try:
+                        start_time = datetime.datetime.now()
                         client.insert(
                             table=args.table,
                             data=batch_data,
                             column_names=target_ch_columns_ordered,
                             database=args.db,
                         )
+                        end_time = datetime.datetime.now()
                         rows_sent += len(batch_data)
                         batches_sent += 1
-                        if batches_sent % 20 == 0:
+                        if batches_sent % 1 == 0:
                             print(
                                 f"{log_prefix} Sent batch {batches_sent}. Total rows sent: {rows_sent}"
                             )
+                        scoreboard_row = [
+                            args.table,
+                            len(batch_data),
+                            start_time,
+                            end_time,
+                        ]
+                        scoreboard_columns = [
+                            'table_name',
+                            'batch_size',
+                            'start_time',
+                            'end_time'
+                        ]
+                        client.insert(
+                            table=SCOREBOARD_TABLE,
+                            data=[scoreboard_row],
+                            column_names=scoreboard_columns,
+                            database=args.db,
+                        )
                     except Exception as e:
                         print(
                             f"{log_prefix} ERROR inserting batch {batches_sent+1}: {e}",
