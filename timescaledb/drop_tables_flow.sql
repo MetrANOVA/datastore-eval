@@ -9,10 +9,4 @@
 -- public | values_wide_inline | table | timescale
 -- (6 rows)
 
-drop table scoreboard;
-drop table values;
-drop table values_inline;
-drop table values_wide;
-drop table values_wide_inline;
-drop table metadata;
-drop table values_wide_inline_normalized;
+drop table values_flow;

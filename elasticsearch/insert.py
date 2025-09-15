@@ -2,7 +2,7 @@ import argparse
 import csv
 import json
 import datetime
-from mappings import NARROW_FORMAT, WIDE_FORMAT
+from mappings import NARROW_FORMAT, WIDE_FORMAT, FLOW_FORMAT
 from datetime import datetime
 from assemble import assemble
 import logging
@@ -42,6 +42,7 @@ parser.add_argument('--no-datastream', help="Disable data stream for inserts", a
 # input file and format
 parser.add_argument('--infile', help="Read rows from infile. Default: sys.stdin", default=sys.stdin, type=argparse.FileType('r'))
 parser.add_argument('--wide', help="Use stardust 'wide' format, including all columns.", action='store_true')
+parser.add_argument('--flow', help="Use stardust 'flow' format, including all columns.", action='store_true')
 
 # intermediate transform output
 parser.add_argument('--transform-output-dir', help="directory name to output binary COPY statements to", default="/tmp/%s" % ''.join(random.choices(string.ascii_letters + string.digits, k=8)))
@@ -65,6 +66,8 @@ es_client = Elasticsearch(hosts=["http://%s:%s" % (arguments.host, arguments.por
 col_source = NARROW_FORMAT
 if arguments.wide:
     col_source = WIDE_FORMAT
+elif arguments.flow:
+    col_source = FLOW_FORMAT
 
 timing_buckets = {
     "insert": {
@@ -110,8 +113,13 @@ def timed_assembly(infile, header, batch_size=1, timing_bucket="assembly", offse
                 continue
             if curr_line % 1000 == 0:
                 logging.info("row %s: partition %s" % (curr_line, hash_bucket))
+        assemble_fmt = NARROW_FORMAT
+        if arguments.wide:
+            assemble_fmt = WIDE_FORMAT
+        elif arguments.flow:
+            assemble_fmt = FLOW_FORMAT
         try:
-            batch.append(assemble(row, header, fmt=WIDE_FORMAT if arguments.wide else NARROW_FORMAT, original_line=line, no_datastream=arguments.no_datastream))
+            batch.append(assemble(row, header, fmt=assemble_fmt, original_line=line, no_datastream=arguments.no_datastream))
         except Exception as e:
             logging.error("Failed to assemble row: %s" % e)
             continue
@@ -205,6 +213,9 @@ def hash_row(row):
     if arguments.wide:
         ROUTER_IDX = 605
         PORT_IDX = 610
+    elif arguments.flow:
+        ROUTER_IDX = 6
+        PORT_IDX = 6
     port_string = "%s::%s" % (row[ROUTER_IDX], row[PORT_IDX])
     return hashlib.md5(port_string.encode('UTF-8')).hexdigest()
 
