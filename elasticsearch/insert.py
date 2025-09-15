@@ -17,7 +17,6 @@ from elasticsearch import Elasticsearch
 import elasticsearch.helpers
 import time
 
-logging.basicConfig(format='%(asctime)s :: %(message)s', level=logging.INFO)
 
 parser = argparse.ArgumentParser(description='Inserts ESnet Stardust Data into elasticsearch.')
 
@@ -49,7 +48,15 @@ parser.add_argument('--transform-output-dir', help="directory name to output bin
 parser.add_argument('--transform-output-intermediate', help="save binary intermediate output. See also: --transform-output-dir. default: False", action='store_true')
 parser.add_argument('--transform-input-dir', help="read COPY batches fron binary intermediate input. See also: --transform-output-intermediate.")
 
+
 arguments = parser.parse_args()
+
+worker_log_string = "[%s/%s]" % (arguments.offset + 1, arguments.skip)
+if arguments.partition:
+    worker_log_string = "[%s/%s]" % (arguments.partition, arguments.total_partitions)
+
+logging.basicConfig(format=f'%(asctime)s :: {worker_log_string} :: %(message)s', level=logging.INFO)
+
 basic_auth = None
 if arguments.user and arguments.password:
     basic_auth = (arguments.user, arguments.password)
@@ -103,8 +110,11 @@ def timed_assembly(infile, header, batch_size=1, timing_bucket="assembly", offse
                 continue
             if curr_line % 1000 == 0:
                 logging.info("row %s: partition %s" % (curr_line, hash_bucket))
-
-        batch.append(assemble(row, header, fmt=WIDE_FORMAT if arguments.wide else NARROW_FORMAT, original_line=line, no_datastream=arguments.no_datastream))
+        try:
+            batch.append(assemble(row, header, fmt=WIDE_FORMAT if arguments.wide else NARROW_FORMAT, original_line=line, no_datastream=arguments.no_datastream))
+        except Exception as e:
+            logging.error("Failed to assemble row: %s" % e)
+            continue
         if len(batch) == arguments.batch_size:
             logging.info('assembled %s values rows (python assembly overhead)' % arguments.batch_size)
             
@@ -166,8 +176,13 @@ def timed_bulk_insert(f, timing_bucket="insert"):
     batch = pickle.load(f)
     before = time.perf_counter()
     before_timestamp = datetime.now()
-    elasticsearch.helpers.bulk(es_client, batch, index=arguments.values_index, raise_on_error=False)
-    logging.info('.bulk() %s rows (elasticsearch insert time)' % arguments.batch_size)
+    try:
+        elasticsearch.helpers.bulk(es_client, batch, index=arguments.values_index, raise_on_error=False)
+        logging.info('.bulk() %s rows (elasticsearch insert time)' % arguments.batch_size)
+    except Exception as e:
+        logging.error("Caught error while doing bulk insert... %s" % e)
+        logging.error("returning early to prevent job fail.")
+        return
     after = time.perf_counter()
     after_timestamp = datetime.now()
     execution_time = after - before

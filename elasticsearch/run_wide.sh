@@ -5,10 +5,10 @@ SKIP_SLICE=$4
 
 WORKERS_MINUS_ONE=$(($WORKERS-1))
 
-LIMIT=10000000
+LIMIT=100000000
 PER_WORKER_LIMIT=$(($LIMIT / $WORKERS))
 
-BATCH_SIZE=15000
+BATCH_SIZE=10000
 
 source venv/bin/activate
 
@@ -25,6 +25,7 @@ if [ -z "$SKIP_SLICE" ]; then
 
     for i in `seq 0 1 $WORKERS_MINUS_ONE`;
     do echo $i;
+    echo python insert.py --wide --infile /media/stardust-data/stardust_data-2025-03-11--2025-03-13.wide.reversed.tsv --offset $i --skip $WORKERS --limit $PER_WORKER_LIMIT --batch-size $BATCH_SIZE --transform-output-dir "$TRANSFORMED_OUTPUT_DIR/$i" --transform-output-intermediate &
     python insert.py --wide --infile /media/stardust-data/stardust_data-2025-03-11--2025-03-13.wide.reversed.tsv --offset $i --skip $WORKERS --limit $PER_WORKER_LIMIT --batch-size $BATCH_SIZE --transform-output-dir "$TRANSFORMED_OUTPUT_DIR/$i" --transform-output-intermediate &
     done;
 

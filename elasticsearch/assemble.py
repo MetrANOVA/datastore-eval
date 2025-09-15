@@ -20,6 +20,13 @@ def assemble(row, header, fmt=NARROW_FORMAT, original_line=None, no_datastream=F
         try:
             element = val
             newval = row[column_offset]
+            if key.startswith("value"):
+                if newval == "":
+                    newval = None
+                else:
+                    newval = float(newval)
+            if newval in ["True", "False"]:
+                newval = bool(newval)
             set_element(document, element, newval)
         except:
             import pdb; pdb.set_trace()
