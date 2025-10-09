@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS `datastoreEval`.`snmp_data` (
+CREATE TABLE IF NOT EXISTS `%s`.`%s` (
     `cpu_idle_percentage` Nullable(Float64),
     `load_avg` Nullable(Float64),
     `memory_pressure` Nullable(Float64),
@@ -7,4 +7,4 @@ CREATE TABLE IF NOT EXISTS `datastoreEval`.`snmp_data` (
     `insert_time` DateTime64(3, 'UTC') DEFAULT now()
 )
 ENGINE = MergeTree()
-ORDER BY (`meta.name`, `meta.device`, `@timestamp`);
+ORDER BY (`insert_time`);

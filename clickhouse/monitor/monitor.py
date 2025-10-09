@@ -10,11 +10,12 @@ parser = argparse.ArgumentParser(prog='Periodic Monitoring Script',
                     description='Monitors key system pressure statistics. Intended to be run once per minute')
 
 parser.add_argument("--host", default="localhost")
-parser.add_argument("--database", default='datastoreEval')
+parser.add_argument("--database", default='metranova')
 parser.add_argument("--port", default="8123")
 parser.add_argument("--user", default="default")
 parser.add_argument("--password", default='unknown')
-parser.add_argument("--log-level", default='info')
+parser.add_argument("--log-level", default='warning')
+parser.add_argument("--table-name", default='machine_metrics')
 
 arguments = parser.parse_args()
 
@@ -58,6 +59,7 @@ def maybe_create_table(client):
     file_path = os.path.dirname(os.path.realpath(__file__))
     with open(os.path.join(file_path, "machine_metrics.sql")) as infile:
         create_statement = infile.read()
+        create_statement = create_statement % (arguments.database, arguments.table_name)
         client.command(create_statement)
 
 def insert_measurements():
@@ -68,13 +70,15 @@ def insert_measurements():
             password=arguments.password, database=arguments.database
         )
         client.ping()
-        logger.info(f"Connected to DB '{db_name}', targeting Table '{table_name}'.")
+        logger.info(f"Connected to DB '{arguments.database}', targeting Table '{arguments.table_name}'.")
     except Exception as e:
         logger.error(f"Error connecting to ClickHouse: {e}")
         sys.exit(1)
 
     maybe_create_table(client)
     measurements = do_measurements()
-    client.insert('machine_measurements', measurements)
+    column_names = ["cpu_idle_percentage", "load_avg", "memory_pressure", "io_pressure", "cpu_pressure"]
+    logger.info('INSERT INTO measurements %s VALUES %s', column_names, measurements)
+    client.insert(arguments.table_name, [measurements], column_names=column_names)
 
 insert_measurements()
