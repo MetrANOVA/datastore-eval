@@ -1,0 +1,30 @@
+<clickhouse>
+  <storage_configuration>
+    <disks>
+      <hot_disk>
+        <path>/mnt/data-hot/</path>
+      </hot_disk>
+      <warm_disk>
+        <path>/mnt/data-warm/</path>
+      </warm_disk>
+      <cold_disk>
+        <path>/mnt/data-cold/</path>
+      </cold_disk>
+    </disks>
+    <policies>
+      <hot_warm_cold>
+        <volumes>
+          <hot_volume>
+            <disk>hot_disk</disk>
+          </hot_volume>
+          <warm_volume>
+            <disk>warm_disk</disk>
+          </warm_volume>
+          <cold_volume>
+            <disk>cold_disk</disk>
+          </cold_volume>
+        </volumes>
+      </hot_warm_cold>
+    </policies>
+  </storage_configuration>
+</clickhouse>
