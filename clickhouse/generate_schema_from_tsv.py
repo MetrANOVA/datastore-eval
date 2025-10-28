@@ -1,140 +1,95 @@
+# generate_ch_schema_from_tsv.py
 import argparse
 import csv
 import sys
 from pathlib import Path
 
+# --- Configuration for TSV -> ClickHouse mapping ---
+TSV_TIMESTAMP_COL = "@timestamp"
+TSV_NODE_COL = "meta.device"
+TSV_INTERFACE_COL = "meta.name"
+DISCARD_TSV_FIELDS = {"@collect_time_min", "@exit_time", "@processing_time"}
+
 
 def generate_schema(
-    tsv_file: Path,
-    db_name: str,
-    table_name: str,
-    output_sql_file: Path,
-    timestamp_col: str = "@timestamp",
-    orderby_cols: str = "meta.device,meta.name,@timestamp",
-    required_string_cols: str = "meta.device,meta.name",
+    input_tsv: Path, db_name: str, table_name: str, output_sql_file: Path
 ):
     """
-    Reads the header of a TSV file and generates a ClickHouse CREATE TABLE SQL schema.
-
-    Args:
-        tsv_file: Path to the input TSV file.
-        db_name: Name of the ClickHouse database.
-        table_name: Name of the ClickHouse table.
-        output_sql_file: Path to save the generated SQL file.
-        timestamp_col: Name of the timestamp column in the TSV header.
-        orderby_cols: Comma-separated string of columns for ORDER BY clause.
-        required_string_cols: Comma-separated string of columns for non-nullable String.
+    Reads the header of a TSV file and generates a ClickHouse CREATE TABLE SQL schema,
+    transforming field names as needed for the database.
     """
-    print(f"Reading header from TSV file: {tsv_file}")
-
+    print(f"Reading header from TSV file: {input_tsv}")
     try:
-        with open(tsv_file, "r", newline="", encoding="utf-8") as tsvfile:
+        with open(input_tsv, "r", newline="", encoding="utf-8") as tsvfile:
             reader = csv.reader(tsvfile, delimiter="\t")
-            try:
-                header = [h.strip() for h in next(reader)]
-            except StopIteration:
-                print(
-                    f"Error: TSV file '{tsv_file}' appears to be empty.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            except Exception as e:
-                print(f"Error reading header from '{tsv_file}': {e}", file=sys.stderr)
-                sys.exit(1)
+            header = [h.strip() for h in next(reader)]
+    except StopIteration:
+        print(f"Error: TSV file '{input_tsv}' appears to be empty.", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error reading header from '{input_tsv}': {e}", file=sys.stderr)
+        sys.exit(1)
 
-        if not header:
-            print(
-                f"Error: Could not read a valid header from '{tsv_file}'.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    print(f"Detected {len(header)} columns in header.")
 
-        print(f"Detected {len(header)} columns in header.")
+    column_definitions = []
+    # These will be the final column names as they appear in the ClickHouse table
+    final_ch_orderby_cols = []
+    final_ch_ts_col = ""
 
-        # --- Process Columns ---
-        column_definitions = []
-        processed_cols = set()
+    # Process columns to generate schema definitions
+    for tsv_col_name in header:
+        if tsv_col_name in DISCARD_TSV_FIELDS:
+            continue
 
-        # Helper sets for quick lookup
-        orderby_cols_set = set(c.strip() for c in orderby_cols.split(",") if c.strip())
-        required_string_cols_set = set(
-            c.strip() for c in required_string_cols.split(",") if c.strip()
-        )
+        target_ch_col_name = tsv_col_name
+        col_type = "Nullable(String)"  # Default type
 
-        # Validate timestamp column exists
-        if timestamp_col not in header:
-            print(
-                f"Error: Specified timestamp column '{timestamp_col}' not found in TSV header.",
-                file=sys.stderr,
-            )
-            print(f"Available headers: {header}", file=sys.stderr)
-            sys.exit(1)
-
-        # Validate required string columns exist
-        missing_req_strings = required_string_cols_set - set(header)
-        if missing_req_strings:
-            print(
-                f"Error: Specified required string columns not found in TSV header: {missing_req_strings}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        for col_name in header:
-            if not col_name:
-                print(
-                    "Warning: Found empty column name in header, skipping.",
-                    file=sys.stderr,
-                )
-                continue
-
-            quoted_col_name = f"`{col_name}`"
+        if tsv_col_name == TSV_TIMESTAMP_COL:
+            target_ch_col_name = "timestamp"  # Use a cleaner name in the database
+            col_type = "DateTime64(3, 'UTC')"
+            final_ch_ts_col = f"`{target_ch_col_name}`"
+        elif tsv_col_name == TSV_NODE_COL:
+            target_ch_col_name = "device"
+            col_type = "String"  # Make required identifiers non-nullable
+            final_ch_orderby_cols.append(f"`{target_ch_col_name}`")
+        elif tsv_col_name == TSV_INTERFACE_COL:
+            target_ch_col_name = "interfaceName"
+            col_type = "String"  # Make required identifiers non-nullable
+            final_ch_orderby_cols.append(f"`{target_ch_col_name}`")
+        elif tsv_col_name.startswith("values."):
+            target_ch_col_name = tsv_col_name.replace("values.", "", 1)
+            col_type = "Nullable(Float64)"
+        elif tsv_col_name.startswith("meta."):
+            target_ch_col_name = tsv_col_name.replace("meta.", "", 1)
             col_type = "Nullable(String)"
+        # Else, it's a general field, use original name and default type Nullable(String)
 
-            if col_name == timestamp_col:
-                col_type = "DateTime64(3, 'UTC')"
-                processed_cols.add(col_name)
-            elif col_name in required_string_cols_set:
-                col_type = "String"
-                processed_cols.add(col_name)
-            # Check for numeric prefix *after* specific required types
-            elif col_name.startswith("values."):
-                col_type = "Nullable(Float64)"
-                processed_cols.add(col_name)
+        # Quote the final column name for safety in SQL
+        quoted_col_name = f"`{target_ch_col_name}`"
+        column_definitions.append(f"    {quoted_col_name} {col_type}")
 
-            column_definitions.append(f"    {quoted_col_name} {col_type}")
+    if not final_ch_ts_col:
+        print(
+            f"Error: Timestamp column '{TSV_TIMESTAMP_COL}' not found in TSV header.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if len(final_ch_orderby_cols) < 2:
+        print(
+            f"Error: One or both key identifier columns ('{TSV_NODE_COL}', '{TSV_INTERFACE_COL}') not found.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-        column_definitions_str = ",\n".join(column_definitions)
+    # Add timestamp to the ORDER BY clause
+    final_ch_orderby_cols.append(final_ch_ts_col)
 
-        # --- Format ORDER BY Clause ---
-        orderby_clause_parts = []
-        missing_orderby_cols = []
-        for col in orderby_cols_set:
-            if col in header:
-                orderby_clause_parts.append(f"`{col}`")
-            else:
-                missing_orderby_cols.append(col)
+    column_definitions_str = ",\n".join(column_definitions)
+    orderby_clause_str = f"({', '.join(final_ch_orderby_cols)})"
+    partition_by_clause_str = f"toYYYYMM({final_ch_ts_col})"
 
-        if missing_orderby_cols:
-            print(
-                f"Error: Columns specified for ORDER BY ({orderby_cols}) not found in TSV header: {missing_orderby_cols}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        if not orderby_clause_parts:
-            print(
-                "Error: ORDER BY clause cannot be empty. Please specify valid --orderby_cols.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        orderby_clause_str = f"({', '.join(orderby_clause_parts)})"
-
-        # --- Format PARTITION BY Clause ---
-        partition_by_clause_str = f"toYYYYMM(`{timestamp_col}`)"
-
-        # --- Construct CREATE TABLE Statement ---
-        create_table_sql = f"""-- Generated Schema from {tsv_file.name}
+    create_table_sql = f"""-- Generated Schema from {input_tsv.name}
 -- Target Database: {db_name}
 -- Target Table: {table_name}
 
@@ -145,34 +100,17 @@ ENGINE = MergeTree()
 PARTITION BY {partition_by_clause_str}
 ORDER BY {orderby_clause_str};
 """
+    print("\n--- Generated ClickHouse Schema ---")
+    print(create_table_sql)
+    print("-----------------------------------")
 
-        # --- Output ---
-        print("\n--- Generated ClickHouse Schema ---")
-        print(create_table_sql)
-        print("-----------------------------------")
-
-        try:
-            with open(output_sql_file, "w", encoding="utf-8") as f_out:
-                f_out.write(create_table_sql)
-            print(f"Schema successfully written to: {output_sql_file}")
-        except IOError as e:
-            print(
-                f"Error writing schema to file '{output_sql_file}': {e}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        except Exception as e:
-            print(
-                f"An unexpected error occurred writing the schema file: {e}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    except FileNotFoundError:
-        print(f"Error: Input TSV file not found at '{tsv_file}'", file=sys.stderr)
-        sys.exit(1)
+    try:
+        output_sql_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_sql_file, "w", encoding="utf-8") as f_out:
+            f_out.write(create_table_sql)
+        print(f"Schema successfully written to: {output_sql_file}")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}", file=sys.stderr)
+        print(f"Error writing schema to file '{output_sql_file}': {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -182,48 +120,26 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--tsv_file",
-        required=True,
+        "--input_tsv",
         type=Path,
-        help="Path to the input TSV file (only header is read).",
+        required=True,
+        help="Path to the original large TSV file to inspect its header.",
     )
     parser.add_argument(
-        "--db_name", required=True, help="Name of the ClickHouse database."
+        "--db_name",
+        required=True,
+        help="Name of the ClickHouse database for the CREATE TABLE statement.",
     )
     parser.add_argument(
-        "--table_name", required=True, help="Name of the ClickHouse table."
+        "--table_name",
+        required=True,
+        help="Name of the ClickHouse table for the CREATE TABLE statement.",
     )
     parser.add_argument(
         "--output_sql_file",
-        required=True,
         type=Path,
+        required=True,
         help="Path to save the generated CREATE TABLE SQL file.",
     )
-    parser.add_argument(
-        "--timestamp_col",
-        default="@timestamp",
-        help="Name of the timestamp column in the TSV header (for DateTime64 type and PARTITION BY).",
-    )
-    parser.add_argument(
-        "--orderby_cols",
-        default="meta.device,meta.name,@timestamp",
-        help="Comma-separated list of column names for the ORDER BY clause.",
-    )
-    parser.add_argument(
-        "--required_string_cols",
-        default="meta.device,meta.name",
-        help="Comma-separated list of column names to define as non-nullable String.",
-    )
-
     args = parser.parse_args()
-
-    # Call the function using attribute access on args object
-    generate_schema(
-        tsv_file=args.tsv_file,
-        db_name=args.db_name,
-        table_name=args.table_name,
-        output_sql_file=args.output_sql_file,
-        timestamp_col=args.timestamp_col,
-        orderby_cols=args.orderby_cols,
-        required_string_cols=args.required_string_cols,
-    )
+    generate_schema(args.input_tsv, args.db_name, args.table_name, args.output_sql_file)

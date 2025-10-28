@@ -101,7 +101,7 @@ if __name__ == "__main__":
     parser.add_argument("--password", default="", help="ClickHouse password")
     parser.add_argument("--db", required=True, help="Database name to ensure exists.")
     parser.add_argument(
-        "--sql-file",
+        "--sql_file",
         required=True,
         type=Path,
         help="Path to the SQL file containing the CREATE TABLE statement(s).",
