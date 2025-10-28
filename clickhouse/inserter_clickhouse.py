@@ -15,7 +15,7 @@ TSV_NODE_COL = "meta.device"
 TSV_INTERFACE_COL = "meta.name"
 REQUIRED_TSV_COLS = [TSV_TIMESTAMP_COL, TSV_NODE_COL, TSV_INTERFACE_COL]
 DISCARD_TSV_FIELDS = {"@collect_time_min", "@exit_time", "@processing_time"}
-
+SCOREBOARD_TABLE = "scoreboard"
 
 # --- Helper Functions ---
 def parse_timestamp(ts_string):
@@ -258,18 +258,38 @@ def main_insert_logic(args):
 
                 if len(batch_data) >= args.batch_size:
                     try:
+                        start_time = datetime.datetime.now()
                         client.insert(
                             table=args.table,
                             data=batch_data,
                             column_names=target_ch_columns_ordered,
                             database=args.db,
                         )
+                        end_time = datetime.datetime.now()
                         rows_sent += len(batch_data)
                         batches_sent += 1
                         if batches_sent % 20 == 0:
                             print(
                                 f"{log_prefix} Sent batch {batches_sent}. Total rows sent: {rows_sent}"
                             )
+                        scoreboard_row = [
+                            args.table,
+                            len(batch_data),
+                            start_time,
+                            end_time,
+                        ]
+                        scoreboard_columns = [
+                            'table_name',
+                            'batch_size',
+                            'start_time',
+                            'end_time'
+                        ]
+                        client.insert(
+                            table=SCOREBOARD_TABLE,
+                            data=[scoreboard_row],
+                            column_names=scoreboard_columns,
+                            database=args.db,
+                        )
                     except Exception as e:
                         print(
                             f"{log_prefix} ERROR inserting batch {batches_sent+1}: {e}",
